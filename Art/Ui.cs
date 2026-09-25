@@ -7,6 +7,8 @@ enum Face { Body, Bold, Display }
 enum Align { Center, Left, Right }
 enum MouseMark { None, Left, Right, Wheel, Move }
 enum GlyphKind { Key, Mouse, Wasd, Or }
+/// <summary>Con qué se está jugando: decide si las pistas de los menús muestran teclas o botones del mando.</summary>
+enum InputGlyphMode { KeyboardMouse, Gamepad }
 
 /// <summary>Un icono de control: una tecla, el ratón, el grupo WASD o la conjunción "o".</summary>
 readonly record struct Glyph(GlyphKind Kind, string Key = "", MouseMark Mouse = MouseMark.None)
@@ -17,19 +19,17 @@ readonly record struct Glyph(GlyphKind Kind, string Key = "", MouseMark Mouse = 
     public static readonly Glyph Or = new(GlyphKind.Or);
 }
 
-/// <summary>Aspecto de una barra de pigmento (vida, aguante, jefe) en un fotograma.</summary>
-record struct VitalLook(float Value, float Lag, float Gain, Color Fill, int Seed)
-{
-    public float Tremble, Hatch, Pulse, Alpha = 1;
-}
-
 /// <summary>
-/// El sistema visual de la interfaz: tipografía, marcos de tinta a mano alzada, teclas dibujadas,
-/// iconos y el iris de cine. Todo se mide en unidades de diseño de 1280×720 multiplicadas por
+/// El sistema visual de la interfaz: tipografía, trazos de pluma, pinceladas, teclas dibujadas,
+/// emblemas y el iris de cine. Todo se mide en unidades de diseño de 1280×720 multiplicadas por
 /// <see cref="S"/>, así que la composición se conserva en cualquier resolución.
 /// Aquí no hay estado de juego: cada pantalla decide qué dibujar y este kit decide cómo.
+/// <para>
+/// Lo que "hierve" (marcos, llamas, iconos, adornos) cambia de pose a 12 fps con un ciclo corto de
+/// dibujos, como la animación tradicional. El texto y las zonas sensibles nunca tiemblan.
+/// </para>
 /// </summary>
-sealed class Ui : IDisposable
+sealed partial class Ui : IDisposable
 {
     // ------------------------------------------------------------------ paleta de interfaz
 
@@ -40,6 +40,8 @@ sealed class Ui : IDisposable
     public static readonly Color Moss = new(104, 116, 70, 255);      // verde oliva del aguante
     public static readonly Color Brass = new(208, 170, 92, 255);     // dorado viejo de la curación
     public static readonly Color EmberDim = new(206, 104, 38, 255);  // brasa para marcar botones
+    /// <summary>Papel quemado del fondo de las barras y del vidrio vacío.</summary>
+    static readonly Color Well = Palette.Mix(Palette.Charcoal, Palette.DarkUmber, 0.18f);
 
     // ------------------------------------------------------------------ escala
 
@@ -53,10 +55,13 @@ sealed class Ui : IDisposable
     public float Time { get; private set; }
     /// <summary>Fotograma del dibujo animado (12 por segundo): lo que "hierve" cambia a este ritmo.</summary>
     public int Frame { get; private set; }
+    /// <summary>Último dispositivo usado en los menús.</summary>
+    public InputGlyphMode GlyphMode { get; set; }
 
     readonly Font _body, _bold, _display;
     readonly List<Font> _owned = [];
-    readonly List<Vector2> _pts = [];
+    readonly UiSkin _skin;
+    readonly Dictionary<string, string> _upper = [];
 
     public Ui()
     {
@@ -66,6 +71,7 @@ sealed class Ui : IDisposable
         _bold = Load(cps, 80, @"C:\Windows\Fonts\georgiab.ttf", @"C:\Windows\Fonts\constanb.ttf", @"C:\Windows\Fonts\timesbd.ttf");
         // Títulos: una romana de libro antiguo si el sistema la tiene.
         _display = Load(cps, 128, @"C:\Windows\Fonts\GARABD.TTF", @"C:\Windows\Fonts\BKANT.TTF", @"C:\Windows\Fonts\palab.ttf", @"C:\Windows\Fonts\georgiab.ttf");
+        _skin = new UiSkin(Path.Combine(AppContext.BaseDirectory, "Assets", "UI"));
         BeginFrame(0);
     }
 
@@ -97,6 +103,7 @@ sealed class Ui : IDisposable
     public static Color A(Color c, float a) => new(c.R, c.G, c.B, (byte)(c.A * Math.Clamp(a, 0, 1)));
     public static float Smooth(float x) { x = Math.Clamp(x, 0, 1); return x * x * (3 - 2 * x); }
     public static float Approach(float v, float target, float step) => v < target ? MathF.Min(target, v + step) : MathF.Max(target, v - step);
+    static float Lerp(float a, float b, float t) => a + (b - a) * t;
 
     /// <summary>Ruido entero determinista en [0, 1).</summary>
     public static float Hash(int n)
@@ -109,11 +116,34 @@ sealed class Ui : IDisposable
         }
     }
 
+    /// <summary>Ruido de valor suave en [0, 1): ondulaciones amplias en vez de dientes de sierra.</summary>
+    public static float Noise(int seed, float x)
+    {
+        int i = (int)MathF.Floor(x);
+        return Lerp(Hash(seed * 31 + i), Hash(seed * 31 + i + 1), Smooth(x - i));
+    }
+
     public static int Seed(string s) { int h = 17; foreach (char c in s) h = h * 31 + c; return h; }
+
+    // ------------------------------------------------------------------ hervor
+
+    /// <summary>Pose del hervor (0-2) a 12 fps: un ciclo corto de dibujos casi iguales, nunca ruido nuevo.</summary>
+    public int Boil => Frame % 3;
+    /// <summary>Hervor a 6 fps para superficies grandes: menos parpadeo en bordes largos.</summary>
+    public int BoilSlow => Frame / 2 % 3;
+    /// <summary>Desviación en [-1, 1] que solo cambia con la pose del hervor.</summary>
+    public float Jit(int seed, bool slow = false) => Hash(seed * 7919 + (slow ? BoilSlow : Boil) * 104729) * 2 - 1;
 
     // ------------------------------------------------------------------ tipografía
 
     Font FontOf(Face f) => f switch { Face.Bold => _bold, Face.Display => _display, _ => _body };
+
+    /// <summary>Mayúsculas cacheadas: los rótulos se piden cada fotograma y no deben crear cadenas.</summary>
+    public string Upper(string s)
+    {
+        if (!_upper.TryGetValue(s, out string? u)) _upper[s] = u = s.ToUpperInvariant();
+        return u;
+    }
 
     public Vector2 Measure(string text, float size, Face face = Face.Body, float tracking = 1) =>
         Raylib.MeasureTextEx(FontOf(face), text, size, tracking * S);
@@ -132,15 +162,16 @@ sealed class Ui : IDisposable
     /// <summary>Encabezado en versalitas espaciadas, con dos trazos de pluma a los lados.</summary>
     public void Heading(string text, Vector2 at, float size, Color color, bool dashes = true, bool shadow = false)
     {
-        string up = text.ToUpperInvariant();
+        string up = Upper(text);
         float tracking = size * 0.22f / S;
         Text(up, at, size, color, Face.Display, tracking, shadow: shadow);
         if (!dashes) return;
         float half = Measure(up, size, Face.Display, tracking).X / 2;
+        int seed = Seed(text);
         for (int side = -1; side <= 1; side += 2)
         {
             Vector2 a = at + new Vector2(side * (half + 12 * S), size * 0.04f);
-            Taper(a, a + new Vector2(side * 30 * S, 0), 1.8f * S, color);
+            Stroke(a, a + new Vector2(side * 30 * S, 0), 1.8f * S, color, seed + side, 0.3f, tipIn: 0.1f, tipOut: 0.8f);
         }
     }
 
@@ -164,52 +195,209 @@ sealed class Ui : IDisposable
         }
     }
 
+    /// <summary>
+    /// Trazo de pluma a lo largo de una polilínea, con un grosor por punto (la presión).
+    /// Se rellena como una tira de triángulos: sin huecos en los codos ni puntos dobles con transparencia.
+    /// </summary>
+    public static void Pen(ReadOnlySpan<Vector2> pts, ReadOnlySpan<float> width, Color c)
+    {
+        int n = pts.Length;
+        if (n < 2 || c.A == 0) return;
+        Vector2 prevL = default, prevR = default;
+        for (int i = 0; i < n; i++)
+        {
+            Vector2 d = i == 0 ? pts[1] - pts[0] : i == n - 1 ? pts[n - 1] - pts[n - 2] : pts[i + 1] - pts[i - 1];
+            float len = d.Length();
+            d = len < 1e-4f ? Vector2.UnitX : d / len;
+            Vector2 nrm = new Vector2(-d.Y, d.X) * (width[i] * 0.5f);
+            Vector2 l = pts[i] + nrm, r = pts[i] - nrm;
+            if (i > 0) { Tri(prevL, prevR, r, c); Tri(prevL, r, l, c); }
+            prevL = l; prevR = r;
+        }
+    }
+
+    /// <summary>Contorno cerrado de grosor irregular (la mano aprieta y afloja al rodear la forma).</summary>
+    public static void PenLoop(ReadOnlySpan<Vector2> pts, float thick, Color c, int seed)
+    {
+        int n = pts.Length;
+        if (n < 3 || c.A == 0) return;
+        Vector2 prevL = default, prevR = default;
+        for (int i = 0; i <= n; i++)
+        {
+            int k = i % n;
+            Vector2 d = pts[(k + 1) % n] - pts[(k - 1 + n) % n];
+            float len = d.Length();
+            d = len < 1e-4f ? Vector2.UnitX : d / len;
+            float w = thick * (0.75f + 0.5f * Noise(seed, k * 0.6f));
+            Vector2 nrm = new Vector2(-d.Y, d.X) * (w * 0.5f);
+            Vector2 l = pts[k] + nrm, r = pts[k] - nrm;
+            if (i > 0) { Tri(prevL, prevR, r, c); Tri(prevL, r, l, c); }
+            prevL = l; prevR = r;
+        }
+    }
+
+    /// <summary>
+    /// Trazo recto dibujado a mano: se desvía un pelo, la presión varía y las puntas se afinan
+    /// (<paramref name="tipIn"/> y <paramref name="tipOut"/> son la fracción del largo que ocupa cada afinado).
+    /// La forma es fija por <paramref name="seed"/>; con <paramref name="boil"/> hierve despacio.
+    /// </summary>
+    public void Stroke(Vector2 a, Vector2 b, float thick, Color c, int seed, float wobble = 0.7f, bool boil = false, float tipIn = 0.22f, float tipOut = 0.22f)
+    {
+        Vector2 d = b - a;
+        float len = d.Length();
+        if (len < 0.5f || c.A == 0) return;
+        Vector2 n = new(-d.Y / len, d.X / len);
+        int segs = Math.Clamp((int)(len / (9 * S)), 2, 63);
+        Span<Vector2> p = stackalloc Vector2[segs + 1];
+        Span<float> w = stackalloc float[segs + 1];
+        int sd = boil ? seed + BoilSlow * 7919 : seed;
+        float span = len / (40 * S);
+        for (int i = 0; i <= segs; i++)
+        {
+            float t = i / (float)segs;
+            float off = (Noise(sd, t * span) - 0.5f) * 2 * wobble * S * MathF.Sin(MathF.PI * t);
+            float press = 0.8f + 0.4f * Noise(seed + 101, t * span * 1.3f);
+            float taper = 1;
+            if (tipIn > 0) taper = MathF.Min(taper, t / tipIn);
+            if (tipOut > 0) taper = MathF.Min(taper, (1 - t) / tipOut);
+            p[i] = a + d * t + n * off;
+            w[i] = thick * press * (0.25f + 0.75f * Smooth(taper));
+        }
+        Pen(p, w, c);
+    }
+
+    /// <summary>Triángulos en abanico: polígonos convexos o con forma de estrella respecto a su centro.</summary>
+    public static void Fill(ReadOnlySpan<Vector2> pts, Color c)
+    {
+        if (pts.Length < 3 || c.A == 0) return;
+        Vector2 center = Vector2.Zero;
+        foreach (Vector2 p in pts) center += p;
+        Fill(pts, c, center / pts.Length);
+    }
+
+    public static void Fill(ReadOnlySpan<Vector2> pts, Color c, Vector2 center)
+    {
+        if (pts.Length < 3 || c.A == 0) return;
+        for (int i = 0; i < pts.Length; i++) Tri(center, pts[i], pts[(i + 1) % pts.Length], c);
+    }
+
+    static void Shift(ReadOnlySpan<Vector2> src, Vector2 by, Span<Vector2> dst)
+    {
+        for (int i = 0; i < src.Length; i++) dst[i] = src[i] + by;
+    }
+
+    /// <summary>
+    /// Contorno de un rectángulo de esquinas redondeadas trazado a mano. Cada esquina y cada tramo se
+    /// desvían según la semilla (<paramref name="rough"/>); <paramref name="boil"/> añade el temblor de
+    /// la pose actual. <paramref name="step"/> (en unidades de diseño) decide lo menudo del borde.
+    /// Escribe en <paramref name="dst"/> (12 + 4·<paramref name="maxPerEdge"/> puntos como mucho) y devuelve cuántos.
+    /// </summary>
+    public int RoundRect(Rectangle r, float radius, int seed, float rough, float boil, Span<Vector2> dst, float step = 16, int maxPerEdge = 8)
+    {
+        radius = MathF.Max(0.5f, MathF.Min(radius, MathF.Min(r.Width, r.Height) * 0.5f));
+        Span<Vector2> corner = stackalloc Vector2[12];
+        for (int c = 0; c < 4; c++)
+        {
+            // Arriba-izquierda, arriba-derecha, abajo-derecha, abajo-izquierda: sentido horario en pantalla.
+            Vector2 cc = c switch
+            {
+                0 => new(r.X + radius, r.Y + radius),
+                1 => new(r.X + r.Width - radius, r.Y + radius),
+                2 => new(r.X + r.Width - radius, r.Y + r.Height - radius),
+                _ => new(r.X + radius, r.Y + r.Height - radius),
+            };
+            Vector2 jit = new Vector2(Hash(seed + c * 13) - 0.5f, Hash(seed + c * 13 + 5) - 0.5f) * rough * 1.4f * S;
+            if (boil > 0) jit += new Vector2(Jit(seed + c * 3), Jit(seed + c * 3 + 1)) * boil * S;
+            float a0 = MathF.PI + c * MathF.PI / 2;
+            for (int j = 0; j < 3; j++)
+            {
+                float ang = a0 + j * MathF.PI / 4;
+                corner[c * 3 + j] = cc + jit + new Vector2(MathF.Cos(ang), MathF.Sin(ang)) * radius;
+            }
+        }
+        int k = 0, q = 0;
+        for (int c = 0; c < 4; c++)
+        {
+            for (int j = 0; j < 3; j++) dst[k++] = corner[c * 3 + j];
+            Vector2 from = corner[c * 3 + 2], to = corner[(c + 1) % 4 * 3];
+            Vector2 d = to - from;
+            float len = d.Length();
+            int m = Math.Clamp((int)(len / (step * S)) - 1, 0, maxPerEdge);
+            Vector2 normal = new Vector2(d.Y, -d.X) / MathF.Max(len, 1e-3f);
+            for (int j = 1; j <= m; j++)
+            {
+                float off = (Hash(seed * 3 + q++) - 0.5f) * rough * S;
+                if (boil > 0) off += Jit(seed * 5 + q) * boil * 0.5f * S;
+                dst[k++] = from + d * (j / (float)(m + 1)) + normal * off;
+            }
+        }
+        return k;
+    }
+
+    /// <summary>Marco de tinta dibujado a mano alrededor de un rectángulo.</summary>
+    public void InkFrame(Rectangle r, float thick, Color color, int seed, float rough = 1.2f, float boil = 0)
+    {
+        Span<Vector2> p = stackalloc Vector2[44];
+        int n = RoundRect(r, 4 * S, seed, rough, boil, p);
+        PenLoop(p[..n], thick, color, seed);
+    }
+
     /// <summary>Filete ornamental: dos trazos que se afinan, un rombo y dos puntos.</summary>
     public void Divider(Vector2 at, float half, Color color)
     {
-        Taper(at - new Vector2(10 * S, 0), at - new Vector2(half, 0), 2 * S, color);
-        Taper(at + new Vector2(10 * S, 0), at + new Vector2(half, 0), 2 * S, color);
+        if (half < 1 || color.A == 0) return;
+        if (_skin.Draw(UiArt.Divider, new Rectangle(at.X, at.Y, half * 2 + 20 * S, 22 * S), color)) return;
+        Stroke(at - new Vector2(10 * S, 0), at - new Vector2(half, 0), 2 * S, color, 311, 0.35f, tipIn: 0.08f, tipOut: 0.85f);
+        Stroke(at + new Vector2(10 * S, 0), at + new Vector2(half, 0), 2 * S, color, 312, 0.35f, tipIn: 0.08f, tipOut: 0.85f);
         Raylib.DrawPoly(at, 4, 5.5f * S, 45, color);
         Raylib.DrawCircleV(at - new Vector2(half + 7 * S, 0), 1.6f * S, color);
         Raylib.DrawCircleV(at + new Vector2(half + 7 * S, 0), 1.6f * S, color);
     }
 
-    /// <summary>Contorno de un rectángulo con esquinas romas y bordes que se desvían un pelo.</summary>
-    List<Vector2> Perimeter(Rectangle r, int seed, float rough)
+    /// <summary>
+    /// Filete con volutas: dos trazos que nacen de un rombo, se afinan y acaban enroscándose.
+    /// <paramref name="t"/> (0-1) lo dibuja desde el centro; las volutas llegan al final.
+    /// </summary>
+    public void Flourish(Vector2 at, float half, Color color, float t = 1, int seed = 5)
     {
-        _pts.Clear();
-        float cr = MathF.Min(4 * S, MathF.Min(r.Width, r.Height) * 0.3f), step = 18 * S;
-        Vector2[] corners =
-        [
-            new(r.X + cr, r.Y), new(r.X + r.Width - cr, r.Y), new(r.X + r.Width, r.Y + cr), new(r.X + r.Width, r.Y + r.Height - cr),
-            new(r.X + r.Width - cr, r.Y + r.Height), new(r.X + cr, r.Y + r.Height), new(r.X, r.Y + r.Height - cr), new(r.X, r.Y + cr),
-        ];
-        int k = 0;
-        for (int i = 0; i < corners.Length; i++)
+        if (t <= 0.01f || half < 4 || color.A == 0) return;
+        if (_skin.Draw(UiArt.Divider, new Rectangle(at.X, at.Y, (half * 2 + 20 * S) * Smooth(t), 22 * S), color)) return;
+        float reach = half * Smooth(t), curl = Smooth((t - 0.6f) / 0.4f);
+        float r = 6.5f * S;
+        const int straight = 8, spiral = 12;
+        Span<Vector2> p = stackalloc Vector2[straight + spiral];
+        Span<float> w = stackalloc float[straight + spiral];
+        for (int side = -1; side <= 1; side += 2)
         {
-            Vector2 a = corners[i], b = corners[(i + 1) % corners.Length];
-            _pts.Add(a);
-            if (i % 2 == 1) continue; // chaflán de esquina: recto
-            Vector2 d = b - a;
-            float len = d.Length();
-            int n = Math.Max(1, (int)(len / step));
-            Vector2 normal = new Vector2(d.Y, -d.X) / MathF.Max(len, 1e-3f);
-            for (int j = 1; j < n; j++)
-                _pts.Add(a + d * (j / (float)n) + normal * (Hash(seed + k++) - 0.5f) * rough * S);
+            float end = reach - (curl > 0 ? r : 0);
+            for (int i = 0; i < straight; i++)
+            {
+                float k = i / (float)(straight - 1);
+                float x = 12 * S + (end - 12 * S) * k;
+                p[i] = at + new Vector2(side * x, (Noise(seed + side, k * 3) - 0.5f) * 0.8f * S);
+                w[i] = 2.2f * S * (1 - k * 0.45f) * (i == 0 ? 0.5f : 1);
+            }
+            int count = straight;
+            if (curl > 0)
+            {
+                // La voluta sube por fuera y vuelve hacia dentro, cerrándose.
+                Vector2 cc = at + new Vector2(side * end, -r);
+                int nSpiral = Math.Max(2, (int)(spiral * curl));
+                for (int i = 1; i <= nSpiral; i++)
+                {
+                    float k = i / (float)spiral;
+                    float ang = MathF.PI / 2 - k * MathF.PI * 1.6f;
+                    float rr = r * (1 - 0.55f * k);
+                    p[count] = cc + new Vector2(side * MathF.Cos(ang) * rr, MathF.Sin(ang) * rr);
+                    w[count] = 1.2f * S * (1 - k * 0.6f);
+                    count++;
+                }
+            }
+            Pen(p[..count], w[..count], color);
+            if (curl > 0.95f) Raylib.DrawCircleV(p[count - 1], 1.4f * S, color);
         }
-        return _pts;
-    }
-
-    /// <summary>Marco de tinta dibujado a mano alrededor de un rectángulo.</summary>
-    public void InkFrame(Rectangle r, float thick, Color color, int seed, float rough = 1.2f)
-    {
-        List<Vector2> p = Perimeter(r, seed, rough);
-        for (int i = 0; i < p.Count; i++)
-        {
-            float t = thick * (0.8f + 0.4f * Hash(seed * 7 + i));
-            Raylib.DrawLineEx(p[i], p[(i + 1) % p.Count], t, color);
-            Raylib.DrawCircleV(p[i], t * 0.5f, color);
-        }
+        Raylib.DrawPoly(at, 4, 5 * S, 45, color);
+        Raylib.DrawPoly(at, 4, 2.2f * S, 45, A(Palette.Ink, color.A / 255f));
     }
 
     /// <summary>Mancha de tinta muy suave detrás de un texto que flota sobre el mundo.</summary>
@@ -224,15 +412,109 @@ sealed class Ui : IDisposable
         }
     }
 
+    /// <summary>Mancha de tinta de borde irregular con algunas gotas sueltas alrededor.</summary>
+    public void Blot(Vector2 c, Vector2 r, Color col, int seed, float rough = 0.22f, bool boil = false)
+    {
+        if (col.A == 0) return;
+        const int n = 48, lobe = 6;
+        Span<Vector2> p = stackalloc Vector2[n];
+        int bs = boil ? BoilSlow * 977 : 0;
+        for (int i = 0; i < n; i++)
+        {
+            float ang = i / (float)n * MathF.Tau;
+            float coarse = Lerp(Hash(seed + i / lobe), Hash(seed + (i / lobe + 1) % (n / lobe)), Smooth(i % lobe / (float)lobe));
+            float fine = Hash(seed * 3 + i + bs);
+            float k = 1 + rough * ((coarse - 0.5f) * 1.6f + (fine - 0.5f) * 0.3f);
+            p[i] = c + new Vector2(MathF.Cos(ang) * r.X, MathF.Sin(ang) * r.Y) * k;
+        }
+        Fill(p, col, c);
+        float drop = MathF.Min(1, r.Y / (40 * S));
+        for (int i = 0; i < 4; i++)
+        {
+            float ang = Hash(seed + 50 + i) * MathF.Tau;
+            float dist = 1.12f + 0.3f * Hash(seed + 60 + i);
+            Raylib.DrawCircleV(c + new Vector2(MathF.Cos(ang) * r.X, MathF.Sin(ang) * r.Y) * dist, (1.5f + 3 * Hash(seed + 70 + i)) * S * drop, col);
+        }
+    }
+
     /// <summary>
-    /// Tarjeta de intertítulo: tinta casi opaca, doble filete de papel y adornos en las esquinas.
-    /// Es el mismo lenguaje que el cartel del jefe, en pequeño.
+    /// Pincelada ancha de <paramref name="from"/> a <paramref name="to"/>: entra redonda, carga pigmento en
+    /// el cuerpo y se deshace en cerdas secas al final. <paramref name="reveal"/> (0-1) es cuánto ha
+    /// recorrido el pincel. El contorno grande es fijo; solo el borde fino hierve, y despacio.
+    /// Si existe la ilustración <paramref name="art"/> en Assets/UI, se dibuja esa en su lugar.
+    /// </summary>
+    public void Swath(Vector2 from, Vector2 to, float width, Color col, int seed, float reveal = 1, UiArt? art = null)
+    {
+        if (col.A == 0 || reveal <= 0.01f) return;
+        Vector2 d = to - from;
+        float len = d.Length();
+        if (len < 1) return;
+        Vector2 u = d / len, n = new(-u.Y, u.X);
+        if (art is { } key && _skin.Has(key))
+        {
+            Vector2 mid = from + d * (reveal * 0.5f);
+            _skin.Draw(key, new Rectangle(mid.X, mid.Y, len * reveal, width * 1.15f), col, MathF.Atan2(u.Y, u.X) * 180 / MathF.PI);
+            return;
+        }
+
+        // El pincel se pinta por carriles (las cerdas), que comparten bordes exactos: con transparencia no
+        // hay costuras. Todos cargan tinta hasta ~70 % del recorrido; luego cada carril se queda seco a un
+        // largo distinto, más cortos hacia los bordes, y el final se deshace solo.
+        const int segs = 40;
+        int lanes = Math.Clamp((int)(width / (5 * S)), 8, 36);
+        float bend = (Hash(seed + 3) - 0.5f) * 0.25f * width;
+        float cap = MathF.Min(0.3f, width * 0.42f / len); // cabeza redonda
+        int bs = BoilSlow * 613;
+        for (int lane = 0; lane < lanes; lane++)
+        {
+            float f0 = -1 + 2f * lane / lanes, f1 = -1 + 2f * (lane + 1) / lanes, fc = (f0 + f1) / 2;
+            float dry = 0.68f + 0.3f * Hash(seed + 500 + lane) * (1 - 0.55f * MathF.Abs(fc)) + 0.04f * Noise(seed + 7, lane * 0.8f);
+            float end = MathF.Min(dry, reveal);
+            int m = Math.Max(1, (int)MathF.Ceiling(segs * end));
+            Vector2 p0 = default, p1 = default;
+            for (int i = 0; i <= m; i++)
+            {
+                // Paso común a todos los carriles: los vecinos comparten exactamente sus bordes.
+                float t = MathF.Min(i / (float)segs, end);
+                Vector2 spine = from + d * t + n * (bend * MathF.Sin(MathF.PI * t));
+                float x = MathF.Min(1, t / cap);
+                float head = MathF.Sqrt(MathF.Max(0, 1 - (1 - x) * (1 - x)));
+                float tail = 1 - 0.28f * Smooth((t - 0.42f) / 0.4f);
+                float half = width * 0.5f * head * tail * (1 + 0.05f * MathF.Sin(t * 9 + seed));
+                float up = half * (1 + 0.2f * (Noise(seed, t * 7) - 0.5f) + 0.08f * (Noise(seed + 2, t * 23) - 0.5f)) + (Hash(seed + i + bs) - 0.5f) * 0.012f * width;
+                float dn = half * (1 + 0.2f * (Noise(seed + 9, t * 7) - 0.5f) + 0.08f * (Noise(seed + 11, t * 23) - 0.5f)) + (Hash(seed + 40 + i + bs) - 0.5f) * 0.012f * width;
+                // Al final del carril la cerda se afina hacia su centro: quedan huecos secos entre cerdas.
+                float squeeze = dry <= reveal ? 0.2f + 0.8f * Smooth((dry - t) / 0.07f) : 1;
+                float a0 = fc + (f0 - fc) * squeeze, a1 = fc + (f1 - fc) * squeeze;
+                Vector2 q0 = spine + n * (a0 >= 0 ? a0 * up : a0 * dn);
+                Vector2 q1 = spine + n * (a1 >= 0 ? a1 * up : a1 * dn);
+                if (i > 0) { Tri(p0, p1, q1, col); Tri(p0, q1, q0, col); }
+                p0 = q0; p1 = q1;
+            }
+        }
+        // Salpicaduras junto a la entrada del pincel.
+        for (int k = 0; k < 3; k++)
+        {
+            Vector2 at = from - u * width * (0.12f + 0.22f * Hash(seed + 300 + k)) + n * (Hash(seed + 310 + k) - 0.5f) * width * 0.8f;
+            Raylib.DrawCircleV(at, width * (0.012f + 0.02f * Hash(seed + 320 + k)), col);
+        }
+    }
+
+    /// <summary>
+    /// Tarjeta de intertítulo: papel negro de borde levemente deshilachado, doble filete de pluma y
+    /// florones en las esquinas. Es el mismo lenguaje que el cartel del jefe, en pequeño.
     /// </summary>
     public void Panel(Rectangle r, float alpha, int seed)
     {
         if (alpha <= 0.01f) return;
-        Raylib.DrawRectangleRec(new Rectangle(r.X + 6 * S, r.Y + 8 * S, r.Width, r.Height), A(Palette.Ink, 0.35f * alpha));
-        Raylib.DrawRectangleRec(r, A(Card, 0.88f * alpha));
+        Span<Vector2> edge = stackalloc Vector2[172];
+        int n = RoundRect(r, 3 * S, seed, 1.8f, 0, edge, 9, 40);
+        Span<Vector2> page = edge[..n];
+        Span<Vector2> shadow = stackalloc Vector2[n];
+        Shift(page, new Vector2(6, 8) * S, shadow);
+        Vector2 mid = new(r.X + r.Width / 2, r.Y + r.Height / 2);
+        Fill(shadow, A(Palette.Ink, 0.35f * alpha), mid + new Vector2(6, 8) * S);
+        Fill(page, A(Card, 0.9f * alpha), mid);
         // Fibras del papel negro, casi invisibles.
         for (int i = 0; i < 14; i++)
         {
@@ -241,16 +523,37 @@ sealed class Ui : IDisposable
             Raylib.DrawLineEx(new Vector2(x0, y), new Vector2(x0 + r.Width * (0.2f + 0.3f * Hash(seed + i)), y), 1, A(Palette.Parchment, 0.025f * alpha));
         }
         Color paper = A(Palette.Parchment, 0.9f * alpha);
-        InkFrame(Inset(r, 10 * S), 2.4f * S, paper, seed, 0.9f);
-        InkFrame(Inset(r, 16 * S), 1f * S, A(Palette.Parchment, 0.45f * alpha), seed + 11, 0.6f);
-        foreach (Vector2 c in new[] { new Vector2(r.X, r.Y), new(r.X + r.Width, r.Y), new(r.X, r.Y + r.Height), new(r.X + r.Width, r.Y + r.Height) })
+        InkFrame(Inset(r, 11 * S), 2.3f * S, paper, seed, 0.9f, 0.35f);
+        InkFrame(Inset(r, 17 * S), 0.9f * S, A(Palette.Parchment, 0.42f * alpha), seed + 11, 0.6f);
+        for (int c = 0; c < 4; c++)
         {
-            Vector2 dir = Vector2.Normalize(new Vector2(r.X + r.Width / 2, r.Y + r.Height / 2) - c) * new Vector2(1, 1);
-            Vector2 at = c + new Vector2(MathF.Sign(dir.X), MathF.Sign(dir.Y)) * 13 * S;
-            Raylib.DrawPoly(at, 4, 4.5f * S, 45, paper);
-            Raylib.DrawCircleV(at + new Vector2(MathF.Sign(dir.X) * 12 * S, 0), 1.4f * S, paper);
-            Raylib.DrawCircleV(at + new Vector2(0, MathF.Sign(dir.Y) * 12 * S), 1.4f * S, paper);
+            var inward = new Vector2(c % 2 == 0 ? 1 : -1, c < 2 ? 1 : -1);
+            var corner = new Vector2(c % 2 == 0 ? r.X : r.X + r.Width, c < 2 ? r.Y : r.Y + r.Height);
+            Fleuron(corner, inward, paper, seed + c);
         }
+    }
+
+    /// <summary>Florón de esquina: rombo, dos trazos que siguen los bordes y una voluta hacia dentro.</summary>
+    void Fleuron(Vector2 corner, Vector2 inward, Color c, int seed)
+    {
+        Vector2 at = corner + inward * 13 * S;
+        float rot = inward.X > 0 ? (inward.Y > 0 ? 0 : 270) : (inward.Y > 0 ? 90 : 180);
+        if (_skin.Draw(UiArt.OrnamentCorner, new Rectangle(at.X + inward.X * 12 * S, at.Y + inward.Y * 12 * S, 44 * S, 44 * S), c, rot)) return;
+        Raylib.DrawPoly(at, 4, 4.5f * S, 45, c);
+        Stroke(at + new Vector2(inward.X * 7 * S, 0), at + new Vector2(inward.X * 32 * S, 0), 1.7f * S, c, seed, 0.25f, tipIn: 0.1f, tipOut: 0.8f);
+        Stroke(at + new Vector2(0, inward.Y * 7 * S), at + new Vector2(0, inward.Y * 32 * S), 1.7f * S, c, seed + 1, 0.25f, tipIn: 0.1f, tipOut: 0.8f);
+        Raylib.DrawCircleV(at + new Vector2(inward.X * 37 * S, 0), 1.4f * S, c);
+        Raylib.DrawCircleV(at + new Vector2(0, inward.Y * 37 * S), 1.4f * S, c);
+        // Voluta diagonal.
+        Span<Vector2> p = stackalloc Vector2[6];
+        Span<float> w = stackalloc float[6];
+        for (int i = 0; i < 6; i++)
+        {
+            float k = i / 5f, ang = k * MathF.PI * 1.2f;
+            p[i] = at + inward * (7 + 7 * k) * S + new Vector2(-inward.Y, inward.X) * MathF.Sin(ang) * 3.5f * S * (1 - k * 0.4f);
+            w[i] = 1.4f * S * (1 - k * 0.6f);
+        }
+        Pen(p, w, c);
     }
 
     public static Rectangle Inset(Rectangle r, float d) => new(r.X + d, r.Y + d, r.Width - 2 * d, r.Height - 2 * d);
@@ -287,294 +590,12 @@ sealed class Ui : IDisposable
         }
     }
 
-    static float Lerp(float a, float b, float t) => a + (b - a) * t;
-
     /// <summary>Radio con el que el iris no tapa nada.</summary>
     public float IrisOpen => MathF.Sqrt(W * W + H * H) * 0.52f;
-
-    // ------------------------------------------------------------------ teclas y ratón
-
-    public float KeyHeight => 32 * S;
-
-    public float KeyWidth(string label) => MathF.Max(32 * S, Measure(label, KeySize(label), Face.Bold, 1).X + 20 * S);
-
-    float KeySize(string label) => (label.Length > 3 ? 13 : 16) * S;
-
-    /// <summary>Tecla de marfil con borde de tinta y sombra dibujada. <paramref name="press"/> la hunde.</summary>
-    public void Keycap(Vector2 center, string label, float alpha = 1, float press = 0)
-    {
-        float w = KeyWidth(label), h = KeyHeight, sink = 2.5f * S * press;
-        var face = new Rectangle(center.X - w / 2, center.Y - h / 2 + sink - 1.5f * S, w, h);
-        var side = new Rectangle(face.X, face.Y + 3.5f * S - sink, w, h);
-        Raylib.DrawRectangleRounded(side, 0.3f, 6, A(Palette.Ink, 0.85f * alpha));
-        Raylib.DrawRectangleRounded(face, 0.3f, 6, A(Ivory, alpha));
-        Raylib.DrawRectangleRec(new Rectangle(face.X + 3 * S, face.Y + h - 6 * S, w - 6 * S, 3.5f * S), A(KeyDepth, 0.55f * alpha));
-        InkFrame(face, 1.9f * S, A(Palette.Ink, alpha), Seed(label), 0.7f);
-        Text(label, new Vector2(face.X + w / 2, face.Y + h / 2 - 1.5f * S), KeySize(label), A(Palette.Ink, alpha), Face.Bold);
-    }
-
-    public Vector2 MouseSize => new Vector2(26, 38) * S;
-
-    /// <summary>Ratón ilustrado con el botón o la rueda que importa marcados en brasa.</summary>
-    public void Mouse(Vector2 center, MouseMark mark, float alpha = 1, float press = 0)
-    {
-        Vector2 size = MouseSize;
-        var body = new Rectangle(center.X - size.X / 2, center.Y - size.Y / 2 + 3 * S + press * 2 * S, size.X, size.Y);
-        float split = body.Y + size.Y * 0.42f;
-        Color ink = A(Palette.Ink, alpha), accent = A(EmberDim, alpha);
-
-        // Cable.
-        Vector2 top = new(body.X + size.X / 2, body.Y);
-        Taper(top, top + new Vector2(-3 * S, -6 * S), 1.8f * S, ink, 2);
-        Raylib.DrawRectangleRounded(new Rectangle(body.X, body.Y + 3.5f * S, size.X, size.Y), 0.9f, 10, A(Palette.Ink, 0.85f * alpha));
-        Raylib.DrawRectangleRounded(body, 0.9f, 10, A(Ivory, alpha));
-        if (mark is MouseMark.Left or MouseMark.Right)
-        {
-            int x = (int)(mark == MouseMark.Left ? body.X : body.X + size.X / 2);
-            Raylib.BeginScissorMode(x, (int)body.Y, (int)MathF.Ceiling(size.X / 2), (int)(split - body.Y));
-            Raylib.DrawRectangleRounded(body, 0.9f, 10, accent);
-            Raylib.EndScissorMode();
-        }
-        Raylib.DrawLineEx(new Vector2(top.X, body.Y + 1), new Vector2(top.X, split), 1.6f * S, ink);
-        Raylib.DrawLineEx(new Vector2(body.X + 1, split), new Vector2(body.X + size.X - 1, split), 1.6f * S, ink);
-        var wheel = new Rectangle(top.X - 3 * S, body.Y + 5 * S, 6 * S, 10 * S);
-        Raylib.DrawRectangleRounded(wheel, 1, 6, mark == MouseMark.Wheel ? accent : A(Ivory, alpha));
-        Raylib.DrawRectangleRoundedLinesEx(wheel, 1, 6, 1.4f * S, ink);
-        Raylib.DrawRectangleRoundedLinesEx(body, 0.9f, 10, 2 * S, ink);
-
-        if (mark == MouseMark.Move)
-        {
-            // Cuatro flechitas: "mueve el ratón".
-            for (int i = 0; i < 4; i++)
-            {
-                float ang = i * MathF.PI / 2;
-                var d = new Vector2(MathF.Cos(ang), MathF.Sin(ang));
-                var n = new Vector2(-d.Y, d.X);
-                Vector2 tip = center + d * new Vector2(size.X * 0.5f + 13 * S, size.Y * 0.5f + 10 * S);
-                Tri(tip, tip - d * 7 * S + n * 5 * S, tip - d * 7 * S - n * 5 * S, ink);
-            }
-        }
-    }
-
-    public Vector2 GlyphSize(Glyph g) => g.Kind switch
-    {
-        GlyphKind.Key => new Vector2(KeyWidth(g.Key), KeyHeight),
-        GlyphKind.Mouse => MouseSize + (g.Mouse == MouseMark.Move ? new Vector2(40, 30) * S : new Vector2(0, 6 * S)),
-        GlyphKind.Wasd => new Vector2(KeyWidth("W") * 3 + 8 * S, KeyHeight * 2 + 6 * S),
-        _ => new Vector2(Measure("o", 17 * S, Face.Body).X + 6 * S, KeyHeight),
-    };
-
-    public void DrawGlyph(Glyph g, Vector2 center, float alpha = 1, float press = 0)
-    {
-        switch (g.Kind)
-        {
-            case GlyphKind.Key: Keycap(center, g.Key, alpha, press); break;
-            case GlyphKind.Mouse: Mouse(center, g.Mouse, alpha, press); break;
-            case GlyphKind.Or: Text("o", center, 17 * S, A(Palette.Parchment, 0.8f * alpha), Face.Body, shadow: true); break;
-            case GlyphKind.Wasd:
-            {
-                float kw = KeyWidth("W"), gap = 4 * S, kh = KeyHeight;
-                Keycap(center - new Vector2(0, (kh + gap) / 2), "W", alpha, press);
-                for (int i = -1; i <= 1; i++)
-                    Keycap(center + new Vector2(i * (kw + gap), (kh + gap) / 2), i switch { -1 => "A", 0 => "S", _ => "D" }, alpha, press);
-                break;
-            }
-        }
-    }
-
-    /// <summary>Una fila de iconos centrada; devuelve su ancho.</summary>
-    public float GlyphRowWidth(Glyph[] glyphs) => glyphs.Sum(g => GlyphSize(g).X) + (glyphs.Length - 1) * 8 * S;
-
-    public void GlyphRow(Glyph[] glyphs, Vector2 center, float alpha = 1, float press = 0)
-    {
-        float x = center.X - GlyphRowWidth(glyphs) / 2;
-        foreach (Glyph g in glyphs)
-        {
-            float gw = GlyphSize(g).X;
-            DrawGlyph(g, new Vector2(x + gw / 2, center.Y), alpha, press);
-            x += gw + 8 * S;
-        }
-    }
-
-    /// <summary>
-    /// Indicación contextual: la tecla y el verbo, sin rectángulo detrás.
-    /// <paramref name="t"/> es su visibilidad (0-1): entra con un fundido y sube unos píxeles.
-    /// </summary>
-    public void Prompt(Vector2 anchor, string key, string verb, float t)
-    {
-        if (t <= 0.01f) return;
-        float a = Smooth(t);
-        Vector2 p = anchor + new Vector2(0, (1 - a) * 8 * S);
-        Wash(p + new Vector2(0, 16 * S), new Vector2(95, 44) * S, 0.8f * a);
-        Keycap(p, key, a);
-        Heading(verb, p + new Vector2(0, 32 * S), 15 * S, A(Palette.Parchment, a), dashes: false, shadow: true);
-    }
-
-    /// <summary>Pista de pie de pantalla ("[Esc] Volver"); devuelve la zona sensible para el ratón.</summary>
-    public Rectangle Hint(Vector2 center, string key, string label, float alpha = 1, float hover = 0)
-    {
-        float kw = KeyWidth(key), lw = Measure(label, 17 * S, Face.Body).X, gap = 10 * S;
-        float total = kw + gap + lw, x = center.X - total / 2;
-        if (alpha <= 0.01f) return HintRect(center, key, label);
-        Keycap(new Vector2(x + kw / 2, center.Y), key, alpha, hover * 0.4f);
-        Color c = A(Palette.Mix(Palette.Parchment, Ivory, hover), (0.75f + 0.25f * hover) * alpha);
-        Text(label, new Vector2(x + kw + gap, center.Y), 17 * S, c, Face.Body, align: Align.Left, shadow: true);
-        if (hover > 0.01f) Taper(new Vector2(x + kw + gap, center.Y + 12 * S), new Vector2(x + kw + gap + lw * hover, center.Y + 12 * S), 1.6f * S, c, 3);
-        return HintRect(center, key, label);
-    }
-
-    public Rectangle HintRect(Vector2 center, string key, string label)
-    {
-        float total = KeyWidth(key) + 10 * S + Measure(label, 17 * S, Face.Body).X;
-        return new Rectangle(center.X - total / 2 - 6 * S, center.Y - KeyHeight / 2 - 4 * S, total + 12 * S, KeyHeight + 8 * S);
-    }
-
-    // ------------------------------------------------------------------ iconos
-
-    /// <summary>Llamita de brasa: el indicador de selección de todos los menús.</summary>
-    public void Flame(Vector2 bottom, float height, float alpha = 1, float flare = 0)
-    {
-        int f = Frame;
-        float h = height * (0.93f + 0.14f * Hash(f * 7 + 1) + flare * 0.3f), w = height * 0.3f;
-        float sway = (Hash(f * 13 + 5) - 0.5f) * w * 0.8f;
-        Draw(1.3f, A(Palette.Ink, 0.9f * alpha));
-        Draw(1f, A(Palette.Ember, alpha));
-        Draw(0.55f, A(new Color(255, 214, 130, 255), alpha));
-
-        void Draw(float k, Color c)
-        {
-            Vector2 center = bottom - new Vector2(0, w * k);
-            Vector2 tip = bottom - new Vector2(-sway * k, h * k);
-            const int n = 10;
-            Vector2 prev = tip;
-            for (int i = 0; i <= n; i++)
-            {
-                // Semicírculo inferior, de un lado del tallo al otro.
-                float ang = -MathF.PI * 0.15f + i / (float)n * MathF.PI * 1.3f;
-                Vector2 p = center + new Vector2(MathF.Cos(ang), MathF.Sin(ang)) * w * k;
-                Tri(center, prev, p, c);
-                prev = p;
-            }
-            Tri(center, prev, tip, c);
-        }
-    }
-
-    /// <summary>
-    /// Frasco de brasa. <paramref name="fill"/> es el nivel del líquido; vacío queda solo la silueta
-    /// de tinta, así que se lee lleno/vacío sin depender del color.
-    /// </summary>
-    public void Flask(Vector2 center, float size, float fill, float alpha = 1, float glow = 1)
-    {
-        float rb = size * 0.34f;
-        Vector2 belly = center + new Vector2(0, size * 0.14f);
-        var neck = new Rectangle(center.X - rb * 0.36f, belly.Y - rb - size * 0.24f, rb * 0.72f, size * 0.28f);
-        var lip = new Rectangle(center.X - rb * 0.5f, neck.Y - size * 0.03f, rb, size * 0.07f);
-        var cork = new Rectangle(center.X - rb * 0.3f, lip.Y - size * 0.1f, rb * 0.6f, size * 0.11f);
-        Color ink = A(Palette.Ink, alpha);
-
-        if (fill > 0.01f && glow > 0)
-            Raylib.DrawCircleV(belly, rb * 1.45f, A(Palette.Ember, 0.12f * glow * alpha * (0.85f + 0.3f * Hash(Frame * 3 + (int)center.X))));
-        Raylib.DrawCircleV(belly + new Vector2(1.5f, 2.5f) * S, rb + 1.5f * S, A(Palette.Ink, 0.55f * alpha));
-
-        // Vidrio vacío.
-        Raylib.DrawCircleV(belly, rb, A(new Color(40, 32, 28, 255), 0.9f * alpha));
-        Raylib.DrawRectangleRec(neck, A(new Color(40, 32, 28, 255), 0.9f * alpha));
-        if (fill > 0.01f)
-        {
-            float level = belly.Y + rb - 2 * rb * Math.Clamp(fill, 0, 1) * 0.92f;
-            Raylib.BeginScissorMode((int)(belly.X - rb - 2), (int)level, (int)(rb * 2 + 4), (int)(belly.Y + rb - level + 2));
-            Raylib.DrawCircleV(belly, rb, A(Palette.Mix(Palette.Ember, Palette.Burgundy, 0.35f), alpha));
-            Raylib.DrawCircleV(belly + new Vector2(0, rb * 0.2f), rb * 0.55f, A(Palette.Mix(Palette.Ember, Brass, 0.4f), alpha));
-            Raylib.EndScissorMode();
-            Raylib.DrawLineEx(new Vector2(belly.X - rb * 0.8f, level + 1), new Vector2(belly.X + rb * 0.8f, level + 1), 1.2f * S, A(Brass, 0.7f * alpha));
-        }
-        Raylib.DrawRing(belly, rb - 1.8f * S, rb + 0.4f * S, 0, 360, 24, ink);
-        Raylib.DrawRectangleLinesEx(neck, 1.6f * S, ink);
-        Raylib.DrawRectangleRec(lip, ink);
-        Raylib.DrawRectangleRec(cork, A(Palette.Umber, alpha));
-        Raylib.DrawRectangleLinesEx(cork, 1.2f * S, ink);
-        // Brillo del vidrio.
-        Raylib.DrawRing(belly, rb * 0.62f, rb * 0.74f, 200, 245, 8, A(Palette.Parchment, (fill > 0.01f ? 0.55f : 0.3f) * alpha));
-    }
-
-    /// <summary>Medallón de tinta a la izquierda de la vida: una gota de sangre dentro de un anillo.</summary>
-    public void Crest(Vector2 c, float r, Color accent, float alpha, float glow = 0)
-    {
-        if (glow > 0) Raylib.DrawCircleV(c, r * 1.6f, A(Brass, 0.25f * glow * alpha));
-        Raylib.DrawCircleV(c + new Vector2(1.5f, 2.5f) * S, r, A(Palette.Ink, 0.5f * alpha));
-        Raylib.DrawCircleV(c, r, A(Card, alpha));
-        Raylib.DrawRing(c, r - 2.2f * S, r, 0, 360, 28, A(Palette.Parchment, 0.85f * alpha));
-        Raylib.DrawRing(c, r + 0.2f * S, r + 1.8f * S, 0, 360, 28, A(Palette.Ink, alpha));
-        // Gota: círculo abajo y punta arriba.
-        float d = r * 0.36f;
-        Vector2 drop = c + new Vector2(0, d * 0.45f);
-        Raylib.DrawCircleV(drop, d, A(accent, alpha));
-        Tri(drop + new Vector2(-d * 0.92f, -d * 0.35f), drop + new Vector2(d * 0.92f, -d * 0.35f), drop + new Vector2(0, -d * 2.3f), A(accent, alpha));
-        Raylib.DrawCircleV(drop + new Vector2(-d * 0.35f, -d * 0.1f), d * 0.25f, A(Palette.Parchment, 0.6f * alpha));
-    }
-
-    // ------------------------------------------------------------------ barras
-
-    /// <summary>
-    /// Barra de pigmento: fondo de papel quemado, rastro claro del daño, pigmento con vetas y
-    /// borde irregular, y el marco de tinta encima.
-    /// </summary>
-    public void Vital(Rectangle r, VitalLook v)
-    {
-        float a = v.Alpha;
-        if (a <= 0.01f) return;
-        if (v.Tremble > 0)
-        {
-            float s = v.Tremble * 2 * S;
-            r.X += (Hash(Frame * 5 + v.Seed) - 0.5f) * s;
-            r.Y += (Hash(Frame * 9 + v.Seed) - 0.5f) * s;
-        }
-        Raylib.DrawRectangleRec(new Rectangle(r.X + 2 * S, r.Y + 3 * S, r.Width, r.Height), A(Palette.Ink, 0.5f * a));
-        Raylib.DrawRectangleRec(r, A(new Color(34, 27, 24, 255), 0.92f * a));
-
-        float fillW = r.Width * Math.Clamp(v.Value, 0, 1);
-        float lagW = r.Width * Math.Clamp(v.Lag, 0, 1);
-        if (lagW > fillW) Raylib.DrawRectangleRec(new Rectangle(r.X + fillW, r.Y, lagW - fillW, r.Height), A(Palette.Mix(v.Fill, Palette.Parchment, 0.4f), 0.85f * a));
-        float gainW = r.Width * Math.Clamp(v.Value + v.Gain, 0, 1);
-        if (gainW > fillW) Raylib.DrawRectangleRec(new Rectangle(r.X + fillW, r.Y, gainW - fillW, r.Height), A(Brass, 0.45f * a));
-
-        if (fillW > 0.5f)
-        {
-            Color fill = Palette.Mix(v.Fill, Palette.Ink, 0.28f * v.Pulse);
-            Raylib.DrawRectangleRec(new Rectangle(r.X, r.Y, fillW, r.Height), A(fill, a));
-            // Vetas del pincel y un filo de luz arriba.
-            Color vein = A(Palette.Mix(fill, Palette.Ink, 0.35f), 0.7f * a);
-            for (int i = 0; i < 2; i++)
-            {
-                float y = r.Y + r.Height * (i == 0 ? 0.38f : 0.72f);
-                float x0 = r.X + r.Width * 0.08f * Hash(v.Seed + i), x1 = r.X + fillW - 6 * S * Hash(v.Seed + i + 5);
-                if (x1 > x0) Raylib.DrawLineEx(new Vector2(x0, y), new Vector2(x1, y), MathF.Max(1, r.Height * 0.08f), vein);
-            }
-            Raylib.DrawLineEx(new Vector2(r.X, r.Y + 1.2f * S), new Vector2(r.X + fillW, r.Y + 1.2f * S), MathF.Max(1, r.Height * 0.1f), A(Palette.Mix(fill, Palette.Parchment, 0.35f), 0.8f * a));
-            // Punta del pigmento: se deshace en picos.
-            int tipSeed = v.Seed * 31 + (int)(fillW / (3 * S));
-            float tipX = r.X + fillW;
-            for (int i = 0; i < 3; i++)
-            {
-                float y0 = r.Y + r.Height * i / 3f, y1 = r.Y + r.Height * (i + 1) / 3f;
-                float reach = MathF.Min(r.Width - fillW, (2 + 5 * Hash(tipSeed + i)) * S);
-                if (reach > 0.5f) Tri(new Vector2(tipX, y0), new Vector2(tipX, y1), new Vector2(tipX + reach, (y0 + y1) / 2), A(fill, a));
-            }
-        }
-        if (v.Hatch > 0.01f)
-        {
-            // Rayado de tinta: agotado, se lee también en blanco y negro.
-            Raylib.BeginScissorMode((int)r.X, (int)r.Y, (int)r.Width, (int)MathF.Ceiling(r.Height));
-            for (float x = r.X - r.Height; x < r.X + r.Width; x += 5 * S)
-                Raylib.DrawLineEx(new Vector2(x, r.Y + r.Height), new Vector2(x + r.Height, r.Y), 1.2f * S, A(Palette.Ink, 0.55f * v.Hatch * a));
-            Raylib.EndScissorMode();
-        }
-        InkFrame(new Rectangle(r.X - 2 * S, r.Y - 2 * S, r.Width + 4 * S, r.Height + 4 * S), 2.2f * S, A(Palette.Ink, a), v.Seed, 0.8f);
-        Raylib.DrawLineEx(new Vector2(r.X + 3 * S, r.Y - 3.4f * S), new Vector2(r.X + r.Width - 3 * S, r.Y - 3.4f * S), 1 * S, A(Palette.Parchment, 0.3f * a));
-    }
 
     public void Dispose()
     {
         foreach (Font f in _owned) Raylib.UnloadFont(f);
+        _skin.Dispose();
     }
 }
