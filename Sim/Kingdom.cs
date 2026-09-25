@@ -41,6 +41,11 @@ sealed class Kingdom : IDisposable
     public float ToastTime;
     public bool BossDefeated;
     public bool SealUp;
+    /// <summary>
+    /// Los esqueletos muertos se rompen en huesos con física. La vista lo apaga cuando dibuja el modelo 3D,
+    /// que se desploma con su propia animación.
+    /// </summary>
+    public bool ShatterIntoBones = true;
 
     Shape _fogSensor;
     float _accumulator;
@@ -696,7 +701,7 @@ sealed class Kingdom : IDisposable
         Vector3 at = s.Body.Position;
         s.Body.Disable();
         if (push.LengthSquared() > 1e-4f) push = Vector3.Normalize(push);
-        for (int i = 0; i < 7; i++)
+        for (int i = 0; i < (ShatterIntoBones ? 7 : 0); i++)
         {
             Vector3 p = at + new Vector3((float)(_rng.NextDouble() - 0.5) * 0.6f, (float)(_rng.NextDouble() - 0.3) * 1.4f, (float)(_rng.NextDouble() - 0.5) * 0.6f);
             Body b = World.CreateDynamicBody(p, Quaternion.CreateFromYawPitchRoll((float)_rng.NextDouble() * 6, (float)_rng.NextDouble() * 6, 0));

@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using CaballeroDeTinta.Art;
 using CaballeroDeTinta.Sim;
 using Raylib_cs;
@@ -11,10 +12,20 @@ namespace CaballeroDeTinta.View;
 /// Los golpes rápidos llevan smear frames de verdad (el dibujo intermedio que cubre el arco de la hoja,
 /// a pincel seco) y los movimientos bruscos dejan múltiplos: copias del dibujo que se quedan atrás.
 /// </summary>
-sealed class Rigs(Ink ink)
+sealed class Rigs(Ink ink) : IDisposable
 {
     Matrix4x4 _root;
     float _time;   // tiempo de animación, cuantizado a doses
+
+    // Esqueleto con modelo glTF (KayKit, CC0). Si falta el archivo se dibuja con primitivas.
+    readonly Puppet? _skeleton = Puppet.TryLoad("Skeleton_Warrior.glb");
+    readonly Model? _blade = Puppet.TryLoadProp("Skeleton_Blade.gltf");
+    readonly Model? _shield = Puppet.TryLoadProp("Skeleton_Shield_Small_A.gltf");
+    readonly ConditionalWeakTable<Skeleton, ClipMemory> _clips = new();
+
+    /// <summary>Dibujar los esqueletos con el modelo 3D (si está disponible) o con primitivas.</summary>
+    public bool UseModels = true;
+    public bool HasSkeletonModel => _skeleton != null;
 
     public void SetTime(float time) => _time = MathF.Floor(time * 12f) / 12f;
 
@@ -363,6 +374,8 @@ sealed class Rigs(Ink ink)
 
     public void DrawSkeleton(Skeleton s, int index)
     {
+        // Con modelo, el esqueleto muerto se desploma con su propia animación en vez de romperse en huesos.
+        if (UseModels && _skeleton != null) { DrawSkeletonModel(s, index, _skeleton); return; }
         if (s.Dead) return;
         ink.BlobShadow(s.Feet + ShadowDrift(index + 5), 0.5f, 0.45f);
 
@@ -438,6 +451,121 @@ sealed class Rigs(Ink ink)
         P(Shape3.Sphere, new(0.09f, 1.8f, 0.19f), new Vector3(0.12f, 0.14f, 0.06f), Palette.Ink, hq, 0);
         // Un yelmo abollado que le baila en la cabeza.
         P(Shape3.Sphere, new(0.02f, 1.95f + MathF.Abs(w) * 0.04f, -0.02f), new Vector3(0.44f, 0.24f, 0.46f), Palette.Mix(Palette.Steel, Palette.Umber, 0.4f), Quaternion.CreateFromAxisAngle(Vector3.UnitZ, 0.25f + w * 0.1f));
+    }
+
+    // ================================================================== esqueleto con modelo
+
+    /// <summary>Último clip de cada esqueleto: al cambiar de estado se funde desde él.</summary>
+    sealed class ClipMemory
+    {
+        public string Clip = "", FromClip = "";
+        public float Time, FromTime, ChangedAt = -99, DeadAt = -1;
+        public bool Loop, FromLoop;
+    }
+
+    const float SkeletonScale = 0.88f;       // el modelo mide 2,6 m con yelmo; el esqueleto del juego, 1,85 m de cápsula
+
+    // El clip de tajo, medido: la hoja sube hasta 0,45 s, baja entre 0,5 y 0,633 s y luego vuelve.
+    const string Chop = "1H_Melee_Attack_Chop";
+    const float ChopTop = 0.45f, ChopFall = 0.5f, ChopImpact = 0.633f;
+
+    /// <summary>
+    /// Instante del clip de tajo a lo largo de todo el ataque (carga + recuperación, 0 = empieza la carga).
+    /// La hoja sube, aguanta arriba y baja acelerando en la última décima de la carga, de modo que toca
+    /// justo cuando la simulación aplica el daño; después vuelve despacio a la guardia.
+    /// </summary>
+    static float ChopClip(float t)
+    {
+        const float windup = 0.7f, swing = 0.1f, hold = windup - swing;
+        if (t < 0.5f) return t / 0.5f * ChopTop;
+        if (t < hold) return ChopTop + (ChopFall - ChopTop) * (t - 0.5f) / (hold - 0.5f);
+        if (t < windup) { float u = (t - hold) / swing; return ChopFall + (ChopImpact - ChopFall) * u * u; }
+        return ChopImpact + (t - windup) * 0.6f;
+    }
+
+    /// <summary>Tiempo del ataque del esqueleto: la carga y la recuperación en una sola línea.</summary>
+    static float AttackTime(Skeleton s) => s.State == FoeState.Windup ? s.StateTime : 0.7f + s.StateTime;
+
+    static float Doses(float t) => MathF.Floor(t * 12f) / 12f;
+
+    /// <summary>
+    /// Qué clip enseña el esqueleto según su estado. El tiempo del clip sale del estado de la simulación,
+    /// así el golpe del modelo cae justo cuando la simulación lo lanza, y se cuantiza a doses como el resto.
+    /// </summary>
+    (string Clip, float Time, bool Loop) SkeletonClip(Skeleton s, int index, Puppet p, ClipMemory m)
+    {
+        float st = Doses(s.StateTime);
+        switch (s.State)
+        {
+            case FoeState.Dead: return ("Death_C_Skeletons", Doses(_time - m.DeadAt), false);
+            case FoeState.Chase:
+            {
+                // El paso sigue a la distancia recorrida (sin patinar): un ciclo del clip son dos pasos.
+                float len = p.Length("Walking_D_Skeletons");
+                return ("Walking_D_Skeletons", Doses(s.WalkPhase / 2 * len % len), true);
+            }
+            // El descenso (la última décima de la carga) no se cuantiza: tiene que verse entero, con su smear.
+            case FoeState.Windup: return (Chop, ChopClip(s.StateTime > 0.6f ? s.StateTime : st), false);
+            case FoeState.Recover: return (Chop, ChopClip(0.7f + st), false);
+            case FoeState.Flinch: return ("Hit_A", st * 1.8f, false);
+            case FoeState.Stagger: return ("Hit_B", st * 0.55f, false);
+            default: return ("Idle", Doses(_time + index * 0.37f), true);
+        }
+    }
+
+    void DrawSkeletonModel(Skeleton s, int index, Puppet p)
+    {
+        ink.BlobShadow(s.Feet + ShadowDrift(index + 5), 0.5f, 0.45f);
+
+        ClipMemory m = _clips.GetValue(s, _ => new ClipMemory());
+        if (s.Dead && m.DeadAt < 0) m.DeadAt = _time;
+        var (clip, time, loop) = SkeletonClip(s, index, p, m);
+        if (m.Clip != clip || (m.Loop == false && time < m.Time - 0.05f))
+        {
+            // Cambio de estado: se funde desde la última pose durante dos dibujos.
+            m.FromClip = m.Clip; m.FromTime = m.Time; m.FromLoop = m.Loop;
+            m.ChangedAt = _time;
+        }
+        m.Clip = clip; m.Time = time; m.Loop = loop;
+        float blend = Math.Clamp((_time - m.ChangedAt) / 0.17f, 0, 1);
+        p.Pose(clip, time, loop, m.FromClip, m.FromTime, m.FromLoop, blend);
+
+        // Squash & stretch de dibujo animado por encima del modelo: se encoge al cargar y se estira al soltar.
+        float squashY = s.State switch
+        {
+            FoeState.Windup when s.StateTime > 0.6f => 1.06f,  // se estira al descargar
+            FoeState.Windup => 1 - 0.1f * Ease(Math.Clamp(s.StateTime / 0.6f, 0, 1)),
+            FoeState.Recover when s.StateTime < 0.12f => 1.08f,
+            FoeState.Flinch => 1.06f,
+            _ => 1,
+        };
+        Matrix4x4 world = Matrix4x4.CreateScale(SkeletonScale) * Matrix4x4.CreateScale(Squash(squashY))
+                        * Matrix4x4.CreateFromAxisAngle(Vector3.UnitY, s.Yaw) * Matrix4x4.CreateTranslation(s.Feet);
+        Color tint = s.HurtFlash > 0 ? new Color(255, 120, 110, 255) : Color.White;
+        // Material 2 del modelo: el brillo de las cuencas.
+        ink.DrawModel(p.Model, world, tint, 0.03f, mat => mat == 2 ? 1f : 0f);
+
+        int handR = p.Bone("handslot.r"), handL = p.Bone("handslot.l");
+        if (_blade is { } blade && handR >= 0) ink.DrawModel(blade, p.BoneWorld(handR) * world, tint, 0.025f);
+        if (_shield is { } shield && handL >= 0) ink.DrawModel(shield, p.BoneWorld(handL) * world, tint, 0.025f);
+
+        // Smear del tajo: el mismo pincel seco que los personajes de primitivas, siguiendo la hoja real.
+        if (s.State is FoeState.Windup or FoeState.Recover && handR >= 0)
+        {
+            _root = world;
+            Smear(t =>
+            {
+                Matrix4x4 b = p.BoneAt(Chop, handR, ChopClip(t));
+                return (b.Translation, Vector3.Normalize(Vector3.TransformNormal(Vector3.UnitY, b)));
+            }, AttackTime(s), 0.6f, 0.7f, 0.15f, 1.15f, Palette.Bone, 20 + index);
+        }
+    }
+
+    public void Dispose()
+    {
+        _skeleton?.Dispose();
+        if (_blade is { } b) Raylib.UnloadModel(b);
+        if (_shield is { } sh) Raylib.UnloadModel(sh);
     }
 
     // ================================================================== el rey

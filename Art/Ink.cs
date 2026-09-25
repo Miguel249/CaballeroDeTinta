@@ -12,7 +12,7 @@ enum Shape3 { Cube, Sphere, Cylinder, Cone }
 ///   - temblor de trazo: en cada dibujo las formas se vuelven a trazar un poco desplazadas, como los
 ///     fotogramas de una animación a mano, que nunca calcan exactamente el anterior;
 ///   - posproducción de película: papel, grano, polvo, rayas, vaivén, parpadeo de exposición y viñeta.
-/// Todo son primitivas: no hay modelos ni texturas externas.
+/// Casi todo son primitivas; los modelos glTF (<see cref="Puppet"/>) pasan por la misma tinta.
 /// </summary>
 sealed unsafe class Ink : IDisposable
 {
@@ -44,18 +44,21 @@ sealed unsafe class Ink : IDisposable
         #version 330
         in vec3 vertexPosition;
         in vec3 vertexNormal;
+        in vec2 vertexTexCoord;
         uniform mat4 matModel;
         uniform mat4 matNormal;
         uniform mat4 matView;
         uniform mat4 matProjection;
         out vec3 fragPos;
         out vec3 fragNormal;
+        out vec2 fragTexCoord;
         """ + Boil + """
         void main()
         {
             vec3 world = vec3(matModel * vec4(vertexPosition, 1.0));
             fragPos = world;
             fragNormal = normalize(vec3(matNormal * vec4(vertexNormal, 0.0)));
+            fragTexCoord = vertexTexCoord;
             gl_Position = matProjection * matView * vec4(world + boil(world), 1.0);
         }
         """;
@@ -64,6 +67,8 @@ sealed unsafe class Ink : IDisposable
         #version 330
         in vec3 fragPos;
         in vec3 fragNormal;
+        in vec2 fragTexCoord;
+        uniform sampler2D texture0;   // blanco en las primitivas; la paleta pintada en los modelos
         uniform vec4 colDiffuse;
         uniform vec3 viewPos;
         uniform vec3 fogColor;
@@ -83,7 +88,7 @@ sealed unsafe class Ink : IDisposable
 
         void main()
         {
-            vec3 base = colDiffuse.rgb;
+            vec3 base = colDiffuse.rgb * texture(texture0, fragTexCoord).rgb;
             vec3 n = normalize(fragNormal);
             vec3 L = normalize(vec3(-0.35, 0.8, 0.45));
             float d = max(dot(n, L), 0.0);
@@ -248,6 +253,7 @@ sealed unsafe class Ink : IDisposable
     readonly int _postRes, _postSeed, _postWeave, _postExposure, _postFlash, _postRough, _postDesat, _postVignette;
     readonly Mesh[] _meshes = new Mesh[4];
     Material _fillMat, _outlineMat;
+    Texture2D _white;
     RenderTexture2D _target;
     readonly float[] _lights = new float[24];
 
@@ -300,6 +306,7 @@ sealed unsafe class Ink : IDisposable
         _outlineMat = Raylib.LoadMaterialDefault();
         _outlineMat.Shader = _outline;
         _outlineMat.Maps[0].Color = Palette.Ink;
+        _white = _fillMat.Maps[0].Texture;
 
         Resize();
     }
@@ -420,6 +427,34 @@ sealed unsafe class Ink : IDisposable
 
     public void Draw(Shape3 shape, Vector3 position, Quaternion rotation, Vector3 scale, Color color, float outline = 0.035f, float emissive = 0f) =>
         Draw(shape, Trs(position, rotation, scale), color, outline, emissive);
+
+    /// <summary>
+    /// Dibuja un modelo (ya posado) con casco de tinta y relleno pintado, usando la textura de cada material.
+    /// <paramref name="emissive"/> decide el brillo propio por material (ojos, runas...).
+    /// </summary>
+    public void DrawModel(Model model, Matrix4x4 world, Color tint, float outline = 0.03f, Func<int, float>? emissive = null)
+    {
+        Matrix4x4 m = Matrix4x4.Transpose(world);
+        for (int i = 0; i < model.MeshCount; i++)
+        {
+            Mesh mesh = model.Meshes[i];
+            int mat = model.MeshMaterial[i];
+            if (outline > 0)
+            {
+                Raylib.SetShaderValue(_outline, _outWidth, outline, ShaderUniformDataType.Float);
+                Rlgl.SetCullFace(0);
+                Raylib.DrawMesh(mesh, _outlineMat, m);
+                Rlgl.SetCullFace(1);
+            }
+            Material source = model.Materials[mat];
+            Color c = source.Maps[0].Color;
+            _fillMat.Maps[0].Texture = source.Maps[0].Texture.Id != 0 ? source.Maps[0].Texture : _white;
+            _fillMat.Maps[0].Color = new Color(c.R * tint.R / 255, c.G * tint.G / 255, c.B * tint.B / 255, c.A * tint.A / 255);
+            Raylib.SetShaderValue(_fill, _fillEmissive, emissive?.Invoke(mat) ?? 0f, ShaderUniformDataType.Float);
+            Raylib.DrawMesh(mesh, _fillMat, m);
+        }
+        _fillMat.Maps[0].Texture = _white;
+    }
 
     /// <summary>Tubo de "manguera de goma" entre dos puntos, curvado con un punto de control.</summary>
     public void Hose(Vector3 a, Vector3 control, Vector3 b, float radius, Color color, int segments = 6)

@@ -52,6 +52,7 @@ sealed class Frontend(Ui ui, Settings settings)
     [
         new("Música", Kind.Slider), new("Efectos", Kind.Slider), new("Sensibilidad del ratón", Kind.Slider),
         new("Mostrar consejos", Kind.Toggle), new("Restablecer consejos"),
+        new("Esqueletos con modelo 3D", Kind.Toggle),
     ];
     readonly Item[] _confirm = [new("Sí"), new("No")];
     readonly Item _back = new("Volver");
@@ -241,6 +242,7 @@ sealed class Frontend(Ui ui, Settings settings)
             case Page.Options:
                 Sounds.Add(UiSfx.Confirm);
                 if (i == 3) { settings.Tutorials = !settings.Tutorials; settings.Save(); }
+                if (i == 5) { settings.ModelSkeletons = !settings.ModelSkeletons; settings.Save(); }
                 if (i == 4) Confirm("¿Restablecer consejos?", "Los consejos de control volverán a aparecer desde el principio.", () =>
                 {
                     settings.SeenTutorials.Clear();
@@ -285,7 +287,7 @@ sealed class Frontend(Ui ui, Settings settings)
         {
             Page.Pause => new Vector2(430, 400),
             Page.Controls => new Vector2(1120, 610),
-            Page.Options => new Vector2(680, 548),
+            Page.Options => new Vector2(680, 620),
             Page.Confirm => new Vector2(540, 250),
             _ => Vector2.Zero,
         } * s;
@@ -342,10 +344,10 @@ sealed class Frontend(Ui ui, Settings settings)
 
     float OptionY(Rectangle r, int i)
     {
-        // Tres grupos: sonido (0-1), control (2) y consejos (3-4); cada grupo abre con su encabezado.
+        // Grupos: sonido (0-1), control (2), consejos (3-4) y gráficos (5); cada uno abre con su encabezado.
         float s = ui.S;
-        int group = i < 2 ? 0 : i < 3 ? 1 : 2;
-        return r.Y + 172 * s + group * 48 * s + i * 44 * s;
+        int group = i < 2 ? 0 : i < 3 ? 1 : i < 5 ? 2 : 3;
+        return r.Y + 160 * s + group * 44 * s + i * 42 * s;
     }
 
     Rectangle SliderTrack(Item it) => new(it.Hit.X + it.Hit.Width - 250 * ui.S, it.Hit.Y + it.Hit.Height / 2, 190 * ui.S, 0);
@@ -526,8 +528,8 @@ sealed class Frontend(Ui ui, Settings settings)
         r.Y += slide;
         ui.Panel(r, a, 15);
         PanelTitle(r, "Opciones", a);
-        string[] groups = ["Sonido", "Control", "Consejos"];
-        int[] firsts = [0, 2, 3];
+        string[] groups = ["Sonido", "Control", "Consejos", "Gráficos"];
+        int[] firsts = [0, 2, 3, 5];
         for (int g = 0; g < groups.Length; g++)
             ui.Heading(groups[g], new Vector2(r.X + r.Width / 2, OptionY(r, firsts[g]) - 34 * s), 14 * s, Ui.A(Palette.Parchment, 0.7f * a));
 
@@ -562,16 +564,17 @@ sealed class Frontend(Ui ui, Settings settings)
                 }
                 case Kind.Toggle:
                 {
+                    bool on = i == 3 ? settings.Tutorials : settings.ModelSkeletons;
                     var box = Centered(new Vector2(it.Hit.X + it.Hit.Width - 150 * s, cy), new Vector2(22, 22) * s);
                     ui.InkFrame(box, 2 * s, Ui.A(Palette.Parchment, 0.9f * a), 77, 0.8f);
-                    if (settings.Tutorials)
+                    if (on)
                     {
                         // Marca de tinta en brasa, trazada con dos golpes de pluma.
                         Vector2 b0 = new(box.X + 4 * s, box.Y + 12 * s), b1 = new(box.X + 10 * s, box.Y + 18 * s), b2 = new(box.X + 21 * s, box.Y + 1 * s);
                         Ui.Taper(b1, b0, 3.4f * s, Ui.A(Palette.Ember, a), 2);
                         Ui.Taper(b1, b2, 3.4f * s, Ui.A(Palette.Ember, a), 3);
                     }
-                    ui.Text(settings.Tutorials ? "Sí" : "No", new Vector2(box.X + 40 * s, cy), 17 * s, Ui.A(Palette.Parchment, 0.85f * a), align: Align.Left);
+                    ui.Text(on ? "Sí" : "No", new Vector2(box.X + 40 * s, cy), 17 * s, Ui.A(Palette.Parchment, 0.85f * a), align: Align.Left);
                     break;
                 }
                 default:

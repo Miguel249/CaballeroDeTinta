@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -11,6 +11,10 @@
   <ItemGroup>
     <PackageReference Include="Box3D.NET" Version="0.5.1" />
     <PackageReference Include="Raylib-cs" Version="8.1.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Assets\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

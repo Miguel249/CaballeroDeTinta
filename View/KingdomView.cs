@@ -12,9 +12,12 @@ sealed class KingdomView : IDisposable
     readonly Cards _cards;
     readonly Hud _hud;
     readonly Rigs _rigs;
+    readonly Settings _settings;
     Camera3D _camera;
     public Camera3D? Override;
     public Camera3D Camera => _camera;
+    /// <summary>Los esqueletos se dibujan ahora mismo con el modelo 3D.</summary>
+    public bool SkeletonModels => _settings.ModelSkeletons && _rigs.HasSkeletonModel;
     /// <summary>Sin HUD ni carteles: el reino como fondo del menú.</summary>
     public bool Backdrop;
     /// <summary>Progreso de la pausa (0-1): el mundo se desatura y el HUD se retira.</summary>
@@ -25,6 +28,7 @@ sealed class KingdomView : IDisposable
         _rigs = new Rigs(_ink);
         _cards = new Cards(ui);
         _hud = new Hud(ui, settings);
+        _settings = settings;
     }
 
     /// <summary>Partida nueva: se olvidan las zonas anunciadas y los rastros del HUD.</summary>
@@ -34,6 +38,7 @@ sealed class KingdomView : IDisposable
     public void Draw(Kingdom k, float dt)
     {
         if (!Backdrop) _hud.Update(k, dt);
+        _rigs.UseModels = _settings.ModelSkeletons;
         float time = (float)Raylib.GetTime();
         _ink.Tick(time);
         _rigs.SetTime(time);
@@ -385,6 +390,7 @@ sealed class KingdomView : IDisposable
 
     public void Dispose()
     {
+        _rigs.Dispose();
         _ink.Dispose();
     }
 }

@@ -8,7 +8,7 @@ using Raylib_cs;
 // Uso:
 //   dotnet run                          -> jugar
 //   dotnet run -- --test                -> pruebas de la simulación, sin ventana
-//   dotnet run -- --shot out.png <0-19> [AnchoxAlto] -> escena automática y captura (8-10: smears y múltiplos, 11-19: interfaz)
+//   dotnet run -- --shot out.png <0-21> [AnchoxAlto] -> escena automática y captura (8-10: smears y múltiplos, 11-19: interfaz, 20-21: esqueleto)
 //   dotnet run -- --trace <0-10>        -> la misma escena sin ventana, imprimiendo el estado
 //   dotnet run -- --wav <carpeta>       -> exporta todos los sonidos y la música sintetizados
 if (args.Contains("--test"))
@@ -113,6 +113,7 @@ using (var view = new KingdomView(ui, settings))
         Controls scripted = shot?.Next() ?? default;
         if (shot != null) ScriptFrontend(shot.Frame);
         bool busy = onClosed != null;
+        kingdom.ShatterIntoBones = !view.SkeletonModels;
         UiInput uiInput = shot != null || busy ? default : UiInput.Read();
 
         if (inMenu)
@@ -254,9 +255,14 @@ namespace CaballeroDeTinta
         int _frame;
         public int Frame => _frame - 1;
         public Camera3D? Camera { get; private set; }
-        public bool Finished => _frame >= Length;
+        public bool Finished => scene switch
+        {
+            // Justo en mitad del tajo del esqueleto: descenso y smear a la vez.
+            20 => _frame > 5 && k.Skeletons[0] is { State: FoeState.Windup, StateTime: >= 0.66f } || _frame > 400,
+            _ => _frame >= Length,
+        };
 
-        int Length => scene switch { 1 => 150, 2 => 170, 3 => 394, 7 => 425, 4 => 36, 5 => 330, 6 => 48, 8 => 25, 9 => 18, 10 => 73, 13 => 60, 16 => 70, 17 => 82, 18 => 130, 19 => 330, _ => 90 };
+        int Length => scene switch { 1 => 150, 2 => 170, 3 => 394, 7 => 425, 4 => 36, 5 => 330, 6 => 48, 8 => 25, 9 => 18, 10 => 73, 13 => 60, 16 => 70, 17 => 82, 18 => 130, 19 => 330, 21 => 170, _ => 90 };
 
         /// <summary>Escenas que empiezan en el menú principal (11, 12, 14, 15).</summary>
         public static bool StartsInMenu(int scene) => scene is 11 or 12 or 14 or 15;
@@ -328,6 +334,14 @@ namespace CaballeroDeTinta
                     return default;
 
                 case 19: // primer consejo: movimiento
+                    return default;
+
+                case 20: // el esqueleto descarga el tajo
+                case 21: // y se desploma al morir
+                    if (f == 0) { Teleport(new Vector3(-2.5f, 0, -9.5f)); k.Player.Yaw = MathF.PI; }
+                    if (scene == 21 && f == 10) k.Skeletons[0].TakeHit(k, 999, k.Player.Body.Position, heavy: true);
+                    // De perfil: el arco de la hoja se ve entero.
+                    Camera = Look(new Vector3(2.6f, 1.7f, -10.9f), new Vector3(-2.6f, 1.2f, -10.6f), 50);
                     return default;
 
                 default: // cartel de derrota
