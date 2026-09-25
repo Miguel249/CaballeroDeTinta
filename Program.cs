@@ -8,7 +8,7 @@ using Raylib_cs;
 // Uso:
 //   dotnet run                          -> jugar
 //   dotnet run -- --test                -> pruebas de la simulación, sin ventana
-//   dotnet run -- --shot out.png <0-10> -> escena automática y captura (8-10: smears y múltiplos)
+//   dotnet run -- --shot out.png <0-19> [AnchoxAlto] -> escena automática y captura (8-10: smears y múltiplos, 11-19: interfaz)
 //   dotnet run -- --trace <0-10>        -> la misma escena sin ventana, imprimiendo el estado
 //   dotnet run -- --wav <carpeta>       -> exporta todos los sonidos y la música sintetizados
 if (args.Contains("--test"))
@@ -39,38 +39,163 @@ if (args.Length >= 2 && args[0] == "--trace")
     for (int i = 0; !script.Finished; i++)
     {
         tk.Update(Kingdom.FixedStep, script.Next());
-        if (i % 10 == 0) Console.WriteLine($"f={i} fase={tk.Phase} hitstop={tk.Hitstop:F2} caballero={tk.Player.State}/{tk.Player.StateTime:F2} pies={tk.Player.Feet} esqueleto={tk.Skeletons[0].State} {tk.Skeletons[0].Feet}");
+        if (i % 10 == 0) Console.WriteLine($"f={i} fase={tk.Phase} hitstop={tk.Hitstop:F2} caballero={tk.Player.State}/{tk.Player.StateTime:F2} pies={tk.Player.Feet} esqueleto={tk.Skeletons[0].State} {tk.Skeletons[0].Feet} fijado={tk.LockTarget?.GetType().Name ?? "-"} vida={tk.Player.Health:F0}");
     }
     return 0;
 }
 
 string? shotPath = args.Length >= 2 && args[0] == "--shot" ? args[1] : null;
 int scene = args.Length >= 3 && int.TryParse(args[2], out int s) ? s : 0;
+// Tamaño opcional de la captura ("1920x1080") para revisar la interfaz en otras resoluciones.
+int[] size = args.Length >= 4 && args[3].Split('x') is [var sw, var sh] && int.TryParse(sw, out int w) && int.TryParse(sh, out int h) ? [w, h] : [1280, 720];
 
 Raylib.SetConfigFlags(ConfigFlags.Msaa4xHint | ConfigFlags.VSyncHint | ConfigFlags.ResizableWindow);
-Raylib.InitWindow(1280, 720, "El Caballero de Tinta - Box3D.NET");
+Raylib.InitWindow(size[0], size[1], "El Caballero de Tinta - Box3D.NET");
 Raylib.SetTargetFPS(144);
-if (shotPath == null) Raylib.DisableCursor();
+// Esc abre la pausa en vez de cerrar la ventana.
+if (shotPath == null) Raylib.SetExitKey(KeyboardKey.Null);
 
 // Sin sonido en las capturas automáticas, ni si no hay dispositivo de audio.
 if (shotPath == null) Raylib.InitAudioDevice();
 Soundtrack? soundtrack = Raylib.IsAudioDeviceReady() ? new Soundtrack() : null;
+// Las capturas usan ajustes de fábrica y no escriben nada en disco.
+Settings settings = shotPath == null ? Settings.Load() : new Settings();
 
+using (var ui = new Ui())
 using (var kingdom = new Kingdom())
-using (var view = new KingdomView())
+using (var view = new KingdomView(ui, settings))
 {
     var shot = shotPath == null ? null : new ShotScript(kingdom, scene);
-    while (!Raylib.WindowShouldClose())
+    var front = new Frontend(ui, settings);
+    bool inMenu = shot == null || ShotScript.StartsInMenu(scene), quit = false;
+    if (inMenu) front.OpenMain(completed: scene == 12);
+    else Raylib.DisableCursor();
+
+    // Pausa: el juego se congela al instante; el iris y el menú entran en ~0,2 s.
+    const float PauseTime = 0.2f;
+    bool paused = false;
+    float pause = 0;
+    int skipLook = 0;
+
+    // Transiciones entre pantallas: el iris se cierra del todo, se hace el cambio y se vuelve a abrir.
+    float iris = shot == null ? 1 : 0;
+    Action? onClosed = null;
+    void IrisTo(Action change) => onClosed ??= change;
+    void ToMenu(bool completed)
     {
-        Controls input = shot?.Next() ?? ReadControls();
+        kingdom.NewGame();
+        view.NewGame();
+        front.OpenMain(completed);
+        inMenu = true;
+        paused = false;
+        pause = 0;
+        Raylib.EnableCursor();
+    }
+    void Pause()
+    {
+        paused = true;
+        front.OpenPause();
+        front.Sounds.Add(UiSfx.Open);
+        Raylib.EnableCursor();
+    }
+    void Resume()
+    {
+        paused = false;
+        front.Close();
+        Raylib.DisableCursor();
+        skipLook = 3; // el primer delta del ratón tras capturarlo salta
+    }
+
+    while (!quit && !Raylib.WindowShouldClose())
+    {
         float dt = shot != null ? Kingdom.FixedStep : MathF.Min(Raylib.GetFrameTime(), 0.05f);
-        kingdom.Update(dt, input);
+        ui.BeginFrame(dt);
+        Controls scripted = shot?.Next() ?? default;
+        if (shot != null) ScriptFrontend(shot.Frame);
+        bool busy = onClosed != null;
+        UiInput uiInput = shot != null || busy ? default : UiInput.Read();
+
+        if (inMenu)
+        {
+            switch (front.Update(uiInput, dt))
+            {
+                case FrontCmd.Start:
+                    IrisTo(() =>
+                    {
+                        kingdom.NewGame();
+                        view.NewGame();
+                        front.Close();
+                        inMenu = false;
+                        Raylib.DisableCursor();
+                        skipLook = 3;
+                    });
+                    break;
+                case FrontCmd.Quit:
+                    quit = true;
+                    break;
+            }
+            // La cámara gira despacio alrededor de la hoguera.
+            kingdom.Update(dt, new Controls { Look = new Vector2(-dt * 30, 0) });
+        }
+        else if (paused)
+        {
+            switch (front.Update(uiInput, dt))
+            {
+                case FrontCmd.Resume: Resume(); break;
+                case FrontCmd.ToMenu: IrisTo(() => ToMenu(false)); break;
+            }
+        }
+        else if (pause <= 0)
+        {
+            Controls input = shot != null ? scripted : busy ? default : ReadControls(settings.MouseSensitivity, ref skipLook);
+            if (shot == null && !busy)
+            {
+                if (Raylib.IsKeyPressed(KeyboardKey.Escape)) Pause();
+                // Tras el cartel de victoria, de vuelta al menú con la demo completada.
+                else if (kingdom.Phase == Phase.Victory && kingdom.PhaseTime > 6.5f) IrisTo(() => ToMenu(true));
+            }
+            if (!paused) kingdom.Update(dt, input);
+        }
+        pause = Ui.Approach(pause, paused ? 1 : 0, dt / PauseTime);
+
+        if (onClosed != null)
+        {
+            iris = MathF.Min(1, iris + dt / (kingdom.Phase == Phase.Victory ? 1.4f : 0.55f));
+            if (iris >= 1) { onClosed(); onClosed = null; }
+        }
+        else iris = MathF.Max(0, iris - dt / 0.7f);
 
         Raylib.BeginDrawing();
         view.Override = shot?.Camera;
-        view.Draw(kingdom);
+        view.Backdrop = inMenu;
+        view.Pause = inMenu ? 0 : Ui.Smooth(pause);
+        // En pausa el HUD no avanza: las animaciones quedan donde estaban.
+        view.Draw(kingdom, paused || pause > 0 ? 0 : dt);
+        if (!inMenu && pause > 0)
+        {
+            // Iris de pausa: se cierra un poco, sin llegar a tapar, y el menú aparece dentro.
+            float p = Ui.Smooth(pause);
+            ui.Iris(ui.Center, ui.IrisOpen + (MathF.Min(ui.W, ui.H) * 0.62f - ui.IrisOpen) * p, Ui.A(new Color(8, 6, 6, 255), 0.92f), 0.018f);
+            Raylib.DrawRectangle(0, 0, (int)ui.W, (int)ui.H, Ui.A(Palette.Ink, 0.3f * p));
+        }
+        front.Draw(inMenu ? 1 : Ui.Smooth((pause - 0.35f) / 0.65f));
+        if (iris > 0)
+        {
+            float closed = Ui.Smooth(iris);
+            ui.Iris(ui.Center, ui.IrisOpen * (1 - closed), new Color(6, 5, 5, 255), 0.02f);
+            if (closed > 0.995f) Raylib.DrawRectangle(0, 0, (int)ui.W, (int)ui.H, new Color(6, 5, 5, 255));
+        }
         Raylib.EndDrawing();
-        soundtrack?.Update(kingdom, view.Camera);
+
+        if (soundtrack != null)
+        {
+            soundtrack.MusicVolume = settings.Music;
+            soundtrack.EffectsVolume = settings.Effects;
+            soundtrack.Paused = !inMenu && (paused || pause > 0);
+            foreach (UiSfx u in front.Sounds) soundtrack.PlayUi(u);
+            soundtrack.Update(kingdom, view.Camera);
+        }
+        front.Sounds.Clear();
 
         if (shot is { Finished: true })
         {
@@ -78,24 +203,39 @@ using (var view = new KingdomView())
             break;
         }
     }
+
+    // Capturas de la interfaz: abre las pantallas que cada escena necesita en el fotograma justo.
+    void ScriptFrontend(int f)
+    {
+        switch (scene)
+        {
+            case 13 or 16 when f == 30: Pause(); break;
+            case 14 when f == 1: front.ShowControls(); break;
+            case 15 when f == 1: front.ShowOptions(); break;
+        }
+        if (scene == 16 && f == 45) front.AskToMenu();
+    }
 }
 
 soundtrack?.Dispose();
+settings.Save();
 if (Raylib.IsAudioDeviceReady()) Raylib.CloseAudioDevice();
 Raylib.CloseWindow();
 return 0;
 
-static Controls ReadControls()
+static Controls ReadControls(float sensitivity, ref int skipLook)
 {
     Vector2 move = Vector2.Zero;
     if (Raylib.IsKeyDown(KeyboardKey.W)) move.Y += 1;
     if (Raylib.IsKeyDown(KeyboardKey.S)) move.Y -= 1;
     if (Raylib.IsKeyDown(KeyboardKey.D)) move.X += 1;
     if (Raylib.IsKeyDown(KeyboardKey.A)) move.X -= 1;
+    Vector2 look = skipLook > 0 ? Vector2.Zero : Raylib.GetMouseDelta() * sensitivity;
+    if (skipLook > 0) skipLook--;
     return new Controls
     {
         Move = move,
-        Look = Raylib.GetMouseDelta(),
+        Look = look,
         Light = Raylib.IsMouseButtonPressed(MouseButton.Left),
         Heavy = Raylib.IsMouseButtonPressed(MouseButton.Right),
         Dodge = Raylib.IsKeyPressed(KeyboardKey.Space),
@@ -112,10 +252,14 @@ namespace CaballeroDeTinta
     sealed class ShotScript(Kingdom k, int scene)
     {
         int _frame;
+        public int Frame => _frame - 1;
         public Camera3D? Camera { get; private set; }
         public bool Finished => _frame >= Length;
 
-        int Length => scene switch { 1 => 150, 2 => 170, 3 => 394, 7 => 425, 4 => 36, 5 => 330, 6 => 48, 8 => 25, 9 => 18, 10 => 73, _ => 90 };
+        int Length => scene switch { 1 => 150, 2 => 170, 3 => 394, 7 => 425, 4 => 36, 5 => 330, 6 => 48, 8 => 25, 9 => 18, 10 => 73, 13 => 60, 16 => 70, 17 => 82, 18 => 130, 19 => 330, _ => 90 };
+
+        /// <summary>Escenas que empiezan en el menú principal (11, 12, 14, 15).</summary>
+        public static bool StartsInMenu(int scene) => scene is 11 or 12 or 14 or 15;
 
         static Camera3D Look(Vector3 from, Vector3 to, float fov = 55) => new(from, to, Vector3.UnitY, fov, CameraProjection.Perspective);
 
@@ -163,6 +307,27 @@ namespace CaballeroDeTinta
                 case 10: // smear del barrido del rey
                     if (f == 0) { Teleport(new Vector3(0, 0, -64.5f)); k.King.Body.SetTransform(new Vector3(0, k.King.HalfHeight, -71)); k.King.Yaw = 0; k.King.Force(KingState.Sweep); }
                     Camera = Look(new Vector3(10, 6.5f, -60), new Vector3(0, 2.5f, -70.5f), 60);
+                    return default;
+
+                case 11: // menú principal
+                case 12: // y al completar la demo
+                case 13: // pausa
+                case 14: // controles
+                case 15: // opciones
+                case 16: // confirmación de volver al menú
+                    return default;
+
+                case 17: // HUD en combate: poca vida, aguante agotado, un frasco gastado y objetivo fijado
+                    if (f == 0) { Teleport(new Vector3(-2.5f, 0, -9.5f)); k.Player.Yaw = MathF.PI; k.Player.Health = 22; k.Player.Flasks = 2; }
+                    if (f == 70) k.Player.Stamina = 0;
+                    Camera = Look(new Vector3(-0.5f, 2.6f, -5.5f), new Vector3(-2.8f, 1.2f, -11.5f));
+                    return new Controls { LockOn = f == 60 };
+
+                case 18: // al empezar: título de la zona e indicación de la hoguera
+                    k.CamYaw = MathF.PI * 0.8f;
+                    return default;
+
+                case 19: // primer consejo: movimiento
                     return default;
 
                 default: // cartel de derrota

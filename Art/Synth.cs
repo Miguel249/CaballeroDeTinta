@@ -2,6 +2,9 @@ using CaballeroDeTinta.Sim;
 
 namespace CaballeroDeTinta.Art;
 
+/// <summary>Sonidos de la interfaz (los pide el menú, no la simulación).</summary>
+enum UiSfx { Hover, Tick, Confirm, Back, Open, Close }
+
 /// <summary>
 /// Sonido sintetizado en código, como el resto del arte: no hay archivos de audio.
 /// Foley de dibujo animado (latigazos, xilófono de huesos, trombón triste, "¡bonk!") y una partitura
@@ -554,6 +557,43 @@ static class Synth
             if (phase2 && bar % 2 == 1) foreach (int n in GallopChords[bar]) Brass(b, t0 + 1.5f * beat, beat * 0.3f, Midi(n + shift), 0.12f);
         }
         return Optical(Fold(b, loop), 0.85f, lowCut: 50);
+    }
+
+    // ================================================================= interfaz
+
+    /// <summary>
+    /// Sonidos de los menús: papel y madera de mesa de animador, muy cortos y en segundo plano.
+    /// </summary>
+    public static float[] Ui(UiSfx s)
+    {
+        var b = Buf(s is UiSfx.Open or UiSfx.Close ? 0.3f : 0.18f);
+        switch (s)
+        {
+            case UiSfx.Hover:
+                // Roce de papel: un soplo de ruido agudo.
+                Noise(b, 71, 0, 0.06f, t => 4200 - t * 20000, 1.4f, t => MathF.Min(1, t * 400) * Exp(t, 0.014f), 1f);
+                return Optical(b, 0.22f, lowCut: 900, highCut: 7500);
+            case UiSfx.Tick:
+                Partials(b, 0, 1350, 1, [(1, 1, 0.012f), (2.7f, 0.4f, 0.006f)]);
+                return Optical(b, 0.18f, lowCut: 400);
+            case UiSfx.Confirm:
+                // Golpecito de lápiz de madera sobre la mesa.
+                Partials(b, 0, 330, 1, [(1, 1, 0.045f), (2.4f, 0.45f, 0.025f), (4.1f, 0.2f, 0.012f)]);
+                Noise(b, 72, 0, 0.02f, t => 3000, 0.8f, t => Exp(t, 0.004f), 0.6f);
+                return Optical(b, 0.42f, lowCut: 120);
+            case UiSfx.Back:
+                // El mismo golpe "al revés": sube el roce y cae un tono más grave.
+                Noise(b, 73, 0, 0.05f, t => 900 + t * 40000, 1.2f, t => t / 0.05f, 0.5f);
+                Partials(b, 0.05f, 235, 1, [(1, 1, 0.04f), (2.3f, 0.4f, 0.02f)]);
+                return Optical(b, 0.36f, lowCut: 120);
+            case UiSfx.Open:
+                // Hoja que pasa: barrido de ruido hacia el grave.
+                Noise(b, 74, 0, 0.28f, t => 2800 * MathF.Exp(-t * 9) + 500, 1.1f, t => MathF.Min(1, t * 40) * Exp(t, 0.07f), 1f);
+                return Optical(b, 0.3f, lowCut: 200);
+            default: // Close
+                Noise(b, 75, 0, 0.28f, t => 500 + 2600 * (1 - MathF.Exp(-t * 9)), 1.1f, t => MathF.Min(1, t * 40) * Exp(t, 0.06f), 1f);
+                return Optical(b, 0.26f, lowCut: 200);
+        }
     }
 
     /// <summary>El golpe de orquesta que acompaña al cartel del jefe, tras el silencio.</summary>

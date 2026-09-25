@@ -9,22 +9,39 @@ namespace CaballeroDeTinta.View;
 sealed class KingdomView : IDisposable
 {
     readonly Ink _ink = new();
-    readonly Cards _cards = new();
+    readonly Cards _cards;
+    readonly Hud _hud;
     readonly Rigs _rigs;
     Camera3D _camera;
-    float _hpLag = 1, _bossLag = 1;
     public Camera3D? Override;
     public Camera3D Camera => _camera;
+    /// <summary>Sin HUD ni carteles: el reino como fondo del menú.</summary>
+    public bool Backdrop;
+    /// <summary>Progreso de la pausa (0-1): el mundo se desatura y el HUD se retira.</summary>
+    public float Pause;
 
-    public KingdomView() => _rigs = new Rigs(_ink);
-
-    public void Draw(Kingdom k)
+    public KingdomView(Ui ui, Settings settings)
     {
+        _rigs = new Rigs(_ink);
+        _cards = new Cards(ui);
+        _hud = new Hud(ui, settings);
+    }
+
+    /// <summary>Partida nueva: se olvidan las zonas anunciadas y los rastros del HUD.</summary>
+    public void NewGame() => _hud.Reset();
+
+    /// <param name="dt">Tiempo de interfaz; 0 congela el HUD (pausa).</param>
+    public void Draw(Kingdom k, float dt)
+    {
+        if (!Backdrop) _hud.Update(k, dt);
         float time = (float)Raylib.GetTime();
         _ink.Tick(time);
         _rigs.SetTime(time);
         _ink.Flash = k.ImpactFlash > 0 ? 1 : 0;
         _ink.Rough = k.ImpactRough;
+        // Menú: el mundo apagado detrás del título. Pausa: más apagado todavía.
+        _ink.Desaturate = Backdrop ? 0.3f : MathF.Max(Pause * 0.7f, _hud.Desaturate);
+        _ink.Vignette = Backdrop ? 0.55f : MathF.Max(Pause * 0.75f, _hud.Vignette);
 
         var (eye, target) = k.CameraRig();
         if (k.Shake > 0)
@@ -46,9 +63,15 @@ sealed class KingdomView : IDisposable
         for (int i = 0; i < k.Skeletons.Count; i++) _rigs.DrawSkeleton(k.Skeletons[i], i);
         _rigs.DrawKing(k.King);
         DrawEffects3D(k);
-        _ink.EndScene(() => { DrawEffects2D(k); Multiplane(k); });
+        _ink.EndScene(() =>
+        {
+            DrawEffects2D(k);
+            if (!Backdrop) _hud.DrawInFilm(_camera);
+            Multiplane(k);
+        });
 
-        DrawHud(k);
+        if (Backdrop) return;
+        _hud.Draw(k, _camera, 1 - Pause);
         DrawCards(k);
     }
 
@@ -293,17 +316,6 @@ sealed class KingdomView : IDisposable
             for (int i = 0; i < 3; i++)
                 Cards.Star(c + new Vector2(MathF.Cos(t + i * 2.1f) * r, MathF.Sin(t + i * 2.1f) * r * 0.3f), r * 0.28f, t, Palette.OldGold);
         }
-
-        if (k.LockTarget is { } lt)
-        {
-            Vector3 p = lt.Body.Position + new Vector3(0, lt.HalfHeight * 0.2f, 0);
-            if (InFront(p))
-            {
-                Vector2 c = Screen(p);
-                Raylib.DrawRing(c, 9, 12, 0, 360, 24, Palette.Parchment);
-                Raylib.DrawCircleV(c, 4, Palette.Ink);
-            }
-        }
     }
 
     /// <summary>Planos de primer plano oscuros y desenfocados, como en la cámara multiplano.</summary>
@@ -349,56 +361,24 @@ sealed class KingdomView : IDisposable
 
     // ================================================================== HUD y carteles
 
-    void DrawHud(Kingdom k)
-    {
-        if (k.Phase is Phase.Intro) return;
-        int w = Raylib.GetScreenWidth(), h = Raylib.GetScreenHeight();
-        Knight p = k.Player;
-        float seed = _ink.Seed;
-        _hpLag += (p.Health / p.MaxHealth - _hpLag) * 0.03f;
-        if (_hpLag < p.Health / p.MaxHealth) _hpLag = p.Health / p.MaxHealth;
-        _cards.Bar(new Vector2(34, 30), 300, 14, p.Health / p.MaxHealth, _hpLag, Palette.Burgundy, seed);
-        _cards.Bar(new Vector2(34, 54), 240, 9, p.Stamina / p.MaxStamina, p.Stamina / p.MaxStamina, Palette.ForestGreen, seed + 1);
-        for (int i = 0; i < p.MaxFlasks; i++)
-        {
-            var c = new Vector2(44 + i * 26, 88);
-            Raylib.DrawCircleV(c, 10, Palette.Ink);
-            Raylib.DrawCircleV(c, 7, i < p.Flasks ? Palette.Ember : new Color(60, 50, 44, 255));
-        }
-        if (p.Riposte > 0) _cards.TextLeft("¡Contraataque!", new Vector2(130, 76), 22, Palette.GhostCyan, bold: true);
-
-        if (k.Phase == Phase.Boss && !k.King.Dead)
-        {
-            FallenKing king = k.King;
-            _bossLag += (king.Health / king.MaxHealth - _bossLag) * 0.02f;
-            float bw = MathF.Min(760, w * 0.6f);
-            _cards.Text("Baldomero III, el Rey que se Desploma", new Vector2(w / 2f, h - 88), 26, Palette.Parchment, bold: true);
-            _cards.Bar(new Vector2((w - bw) / 2, h - 66), bw, 12, king.Health / king.MaxHealth, _bossLag, king.Phase2 ? Palette.Crimson : Palette.Burgundy, seed + 2);
-        }
-
-        if (k.ToastTime > 0 && k.Phase is Phase.Explore or Phase.Boss)
-            _cards.Text(k.Toast, new Vector2(w / 2f, 110), 30, Palette.Alpha(Palette.Parchment, Math.Clamp(k.ToastTime, 0, 1)), bold: true);
-
-        if (k.Phase is Phase.Explore && Vector3.Distance(p.Feet, k.Bonfire) < 2.4f && p.State != KnightState.Rest)
-            _cards.Text("E · descansar en la hoguera", new Vector2(w / 2f, h / 2f + 90), 24, Palette.Ember, bold: true);
-
-        string help = "WASD mover · ratón cámara · clic izq. ataque · clic der. ataque fuerte · Espacio esquivar · F desviar · Q curar · Tab fijar · E hoguera";
-        _cards.Text(help, new Vector2(w / 2f, h - 18), 17, Palette.Alpha(Palette.Parchment, 0.75f));
-    }
-
     void DrawCards(Kingdom k)
     {
         switch (k.Phase)
         {
             case Phase.Intro:
-                _cards.TitleCard(k.PhaseTime, "— Capítulo I · La Sala de las Campanas —", "BALDOMERO III", "el Rey que se Desploma", _ink.Seed);
+            {
+                BossBill bill = BossBill.Baldomero;
+                _cards.TitleCard(k.PhaseTime, bill.Overline, bill.Name, bill.Epithet, _ink.Seed);
                 break;
+            }
             case Phase.Dead:
-                if (k.PhaseTime > 0.8f)
-                    _cards.EndCard(k.PhaseTime - 0.8f, "Y así cayó el pequeño caballero", k.PhaseTime > 3f ? "— pulsa cualquier botón para volver a la hoguera —" : "", Palette.Crimson, _ink.Seed);
+                // La simulación acepta cualquier botón a partir de 2,5 s.
+                if (k.PhaseTime > 0.3f)
+                    _cards.EndCard(k.PhaseTime - 0.3f, "Y así cayó el pequeño caballero", "La tinta se seca, pero la hoguera aún arde.", Palette.Parchment,
+                        bleed: true, ("E", "Volver a la hoguera"), Ui.Smooth((k.PhaseTime - 2.5f) / 0.25f));
                 break;
             case Phase.Victory:
-                _cards.EndCard(k.PhaseTime, "Fin del primer rollo", "Baldomero III descansa. La campana guarda silencio.", Palette.OldGold, _ink.Seed);
+                _cards.EndCard(k.PhaseTime, "Fin del primer rollo", "Baldomero III descansa. La campana guarda silencio.", Palette.OldGold, bleed: false);
                 break;
         }
     }
@@ -406,6 +386,5 @@ sealed class KingdomView : IDisposable
     public void Dispose()
     {
         _ink.Dispose();
-        _cards.Dispose();
     }
 }

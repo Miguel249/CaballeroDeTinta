@@ -3,81 +3,56 @@ using Raylib_cs;
 
 namespace CaballeroDeTinta.Art;
 
-/// <summary>Todo lo que se dibuja sobre la película: carteles, efectos de impacto y HUD.</summary>
-sealed class Cards : IDisposable
+/// <summary>Lo que se dibuja sobre la película: carteles de cine y efectos de impacto. El HUD vive en <see cref="View.Hud"/>.</summary>
+sealed class Cards(Ui ui)
 {
-    readonly Font _serif, _serifBold;
-    readonly bool _ownsFonts;
-
-    public Cards()
-    {
-        // Letras de cartel de cine: una serif del sistema, con acentos y eñes.
-        int[] codepoints = Enumerable.Range(32, 224).Append(0x2014).Append(0x2019).ToArray();
-        string regular = @"C:\Windows\Fonts\georgia.ttf", bold = @"C:\Windows\Fonts\georgiab.ttf";
-        if (File.Exists(regular) && File.Exists(bold))
-        {
-            _serif = Raylib.LoadFontEx(regular, 64, codepoints, codepoints.Length);
-            _serifBold = Raylib.LoadFontEx(bold, 96, codepoints, codepoints.Length);
-            Raylib.SetTextureFilter(_serif.Texture, TextureFilter.Bilinear);
-            Raylib.SetTextureFilter(_serifBold.Texture, TextureFilter.Bilinear);
-            _ownsFonts = true;
-        }
-        else
-        {
-            _serif = _serifBold = Raylib.GetFontDefault();
-        }
-    }
-
-    public void Text(string text, Vector2 center, float size, Color color, bool bold = false, float spacing = 2f)
-    {
-        Font f = bold ? _serifBold : _serif;
-        Vector2 m = Raylib.MeasureTextEx(f, text, size, spacing);
-        Raylib.DrawTextEx(f, text, center - m / 2, size, spacing, color);
-    }
-
-    public void TextLeft(string text, Vector2 pos, float size, Color color, bool bold = false) =>
-        Raylib.DrawTextEx(bold ? _serifBold : _serif, text, pos, size, 1.5f, color);
-
     // ------------------------------------------------------------------ carteles
 
     /// <summary>Segundos de pantalla negra y silencio antes de que caiga el cartel del jefe.</summary>
     public const float CardDelay = 1.1f;
 
+    /// <summary>Duración total del cartel del jefe (la simulación da paso al combate a los 4,2 s).</summary>
+    public const float CardLength = 4.2f;
+
     /// <summary>
     /// Cartel de presentación en blanco y negro con marco ornamental, como los intertítulos del cine mudo.
-    /// Primero la pantalla se va a negro y la música calla; el cartel aparece después, de golpe.
+    /// Primero la luz cae y la música calla; el cartel aparece de golpe, después el nombre crece,
+    /// el epíteto se revela y todo se funde justo antes de que el rey despierte.
     /// </summary>
     public void TitleCard(float t, string overline, string title, string subtitle, float seed)
     {
-        int w = Raylib.GetScreenWidth(), h = Raylib.GetScreenHeight();
+        float w = ui.W, h = ui.H, s = ui.S;
         float fadeIn = Math.Clamp(t / 0.25f, 0, 1);
-        Raylib.DrawRectangle(0, 0, w, h, Palette.Alpha(new Color(12, 10, 10, 255), fadeIn));
+        float fadeOut = 1 - Ui.Smooth((t - (CardLength - 0.4f)) / 0.4f);
+        Raylib.DrawRectangle(0, 0, (int)w, (int)h, Ui.A(new Color(12, 10, 10, 255), fadeIn * MathF.Max(fadeOut, 0.0f)));
         if (t < CardDelay) return;
+        float local = t - CardDelay;
 
         // El cartel "tiembla" en el proyector.
         var rng = new Random((int)seed);
-        Vector2 jitter = new((float)rng.NextDouble() * 3 - 1.5f, (float)rng.NextDouble() * 3 - 1.5f);
-        Vector2 c = new Vector2(w / 2f, h / 2f) + jitter;
-        float cw = MathF.Min(w * 0.78f, 1000), ch = MathF.Min(h * 0.62f, 440);
+        Vector2 jitter = new Vector2((float)rng.NextDouble() * 3 - 1.5f, (float)rng.NextDouble() * 3 - 1.5f) * s;
+        Vector2 c = ui.Center + jitter;
+        float cw = MathF.Min(w * 0.78f, 1000 * s), ch = MathF.Min(h * 0.62f, 440 * s);
         var rect = new Rectangle(c.X - cw / 2, c.Y - ch / 2, cw, ch);
-        Color paper = new(232, 224, 206, 255), ink = new(18, 15, 14, 255);
+        Color paper = Ui.A(new Color(232, 224, 206, 255), fadeOut), ink = Ui.A(new Color(18, 15, 14, 255), fadeOut);
 
         Raylib.DrawRectangleRec(rect, ink);
-        Frame(rect, paper, 10);
-        Frame(Inset(rect, 22), paper, 3);
-        Frame(Inset(rect, 30), paper, 1.5f);
-        foreach (Vector2 corner in Corners(Inset(rect, 26)))
-            Flourish(corner, c, paper);
+        Raylib.DrawRectangleLinesEx(rect, 10 * s, paper);
+        ui.InkFrame(Ui.Inset(rect, 22 * s), 3 * s, paper, 7, 0.8f);
+        ui.InkFrame(Ui.Inset(rect, 30 * s), 1.5f * s, paper, 13, 0.5f);
+        foreach (Vector2 corner in Corners(Ui.Inset(rect, 26 * s)))
+            Flourish(corner, c, paper, s);
 
-        Text(overline, new Vector2(c.X, rect.Y + ch * 0.24f), 28, paper, spacing: 6);
-        Rule(new Vector2(c.X, rect.Y + ch * 0.33f), cw * 0.34f, paper);
-        float grow = 1f + 0.03f * MathF.Max(0, 1 - (t - CardDelay) * 2);
-        Text(title, new Vector2(c.X, c.Y + 6), MathF.Min(74, cw / MathF.Max(8, title.Length) * 1.7f) * grow, paper, bold: true, spacing: 4);
-        Rule(new Vector2(c.X, rect.Y + ch * 0.67f), cw * 0.34f, paper);
-        Text(subtitle, new Vector2(c.X, rect.Y + ch * 0.77f), 26, paper, spacing: 3);
+        ui.Heading(overline, new Vector2(c.X, rect.Y + ch * 0.24f), 22 * s, paper);
+        ui.Divider(new Vector2(c.X, rect.Y + ch * 0.33f), cw * 0.3f, paper);
+        float grow = 1f + 0.03f * MathF.Max(0, 1 - local * 2);
+        string name = title.ToUpperInvariant();
+        float size = MathF.Min(88 * s, cw / MathF.Max(8, name.Length) * 1.9f) * grow;
+        ui.Text(name, new Vector2(c.X, c.Y + 4 * s), size, paper, Face.Display, 5);
+        float sub = Ui.Smooth((local - 0.45f) / 0.35f);
+        ui.Divider(new Vector2(c.X, rect.Y + ch * 0.67f), cw * 0.3f * sub, Ui.A(paper, sub));
+        ui.Text(subtitle, new Vector2(c.X, rect.Y + ch * 0.77f + (1 - sub) * 6 * s), 28 * s, Ui.A(paper, sub), Face.Body, 3);
     }
-
-    static Rectangle Inset(Rectangle r, float d) => new(r.X + d, r.Y + d, r.Width - 2 * d, r.Height - 2 * d);
 
     static IEnumerable<Vector2> Corners(Rectangle r)
     {
@@ -87,39 +62,34 @@ sealed class Cards : IDisposable
         yield return new(r.X + r.Width, r.Y + r.Height);
     }
 
-    static void Frame(Rectangle r, Color color, float thick) => Raylib.DrawRectangleLinesEx(r, thick, color);
-
-    static void Rule(Vector2 center, float halfWidth, Color color)
-    {
-        Raylib.DrawLineEx(center - new Vector2(halfWidth, 0), center - new Vector2(12, 0), 2, color);
-        Raylib.DrawLineEx(center + new Vector2(12, 0), center + new Vector2(halfWidth, 0), 2, color);
-        Raylib.DrawPoly(center, 4, 7, 45, color);
-    }
-
-    static void Flourish(Vector2 corner, Vector2 center, Color color)
+    static void Flourish(Vector2 corner, Vector2 center, Color color, float s)
     {
         Vector2 dir = Vector2.Normalize(center - corner);
-        Raylib.DrawPoly(corner + dir * 12, 4, 9, 45, color);
-        Raylib.DrawRing(corner + dir * 12, 14, 16, 0, 360, 24, color);
-        Raylib.DrawCircleV(corner + dir * 34, 3, color);
-        Raylib.DrawCircleV(corner + dir * 46, 2, color);
+        Raylib.DrawPoly(corner + dir * 12 * s, 4, 9 * s, 45, color);
+        Raylib.DrawRing(corner + dir * 12 * s, 14 * s, 16 * s, 0, 360, 24, color);
+        Raylib.DrawCircleV(corner + dir * 34 * s, 3 * s, color);
+        Raylib.DrawCircleV(corner + dir * 46 * s, 2 * s, color);
     }
 
-    /// <summary>Cartel final ("Y así cayó...", "Fin del primer rollo").</summary>
-    public void EndCard(float t, string title, string subtitle, Color accent, float seed)
+    /// <summary>
+    /// Cartel final ("Y así cayó...", "Fin del primer rollo"). El iris se cierra sobre el texto;
+    /// con <paramref name="bleed"/> su borde se deshace como tinta que invade el papel.
+    /// </summary>
+    public void EndCard(float t, string title, string subtitle, Color accent, bool bleed, (string Key, string Verb)? prompt = null, float promptT = 0)
     {
-        int w = Raylib.GetScreenWidth(), h = Raylib.GetScreenHeight();
-        float a = Math.Clamp(t / 1.2f, 0, 1);
-        Raylib.DrawRectangle(0, 0, w, h, Palette.Alpha(new Color(10, 8, 8, 255), a * 0.88f));
-        if (t < 0.5f) return;
-        float ta = Math.Clamp((t - 0.5f) / 0.8f, 0, 1);
-        var rng = new Random((int)seed);
-        Vector2 c = new(w / 2f + (float)rng.NextDouble() * 2, h / 2f + (float)rng.NextDouble() * 2);
-        // Iris de cierre: un círculo de luz que se estrecha alrededor del texto.
-        Raylib.DrawRing(c, 230 + (1 - ta) * 400, 2000, 0, 360, 64, new Color(6, 5, 5, 255));
-        Text(title, c - new Vector2(0, 20), 58, Palette.Alpha(accent, ta), bold: true, spacing: 5);
-        Rule(c + new Vector2(0, 26), 170, Palette.Alpha(Palette.Parchment, ta));
-        Text(subtitle, c + new Vector2(0, 62), 24, Palette.Alpha(Palette.Parchment, ta), spacing: 3);
+        float s = ui.S;
+        Vector2 c = ui.Center;
+        float close = Ui.Smooth(t / 1.6f);
+        Raylib.DrawRectangle(0, 0, (int)ui.W, (int)ui.H, Ui.A(new Color(10, 8, 8, 255), close * 0.45f));
+        float radius = ui.IrisOpen + (MathF.Min(ui.W, ui.H) * 0.42f - ui.IrisOpen) * close;
+        ui.Iris(c, radius, new Color(8, 6, 6, 255), bleed ? 0.02f + 0.07f * close : 0.012f);
+
+        float ta = Ui.Smooth((t - 0.7f) / 0.8f);
+        if (ta <= 0) return;
+        ui.Text(title, c - new Vector2(0, 22 * s - (1 - ta) * 6 * s), 54 * s, Ui.A(accent, ta), Face.Display, 3, shadow: true);
+        ui.Divider(c + new Vector2(0, 24 * s), 160 * s * ta, Ui.A(Palette.Parchment, ta));
+        ui.Text(subtitle, c + new Vector2(0, 56 * s), 20 * s, Ui.A(Palette.Parchment, 0.9f * ta), Face.Body, 2, shadow: true);
+        if (prompt is var (key, verb)) ui.Prompt(c + new Vector2(0, 112 * s), key, verb, promptT);
     }
 
     // ------------------------------------------------------------------ impactos
@@ -193,28 +163,5 @@ sealed class Cards : IDisposable
                 p = q;
             }
         }
-    }
-
-    // ------------------------------------------------------------------ HUD
-
-    /// <summary>Barra de época: marco de tinta y relleno con borde irregular que hierve.</summary>
-    public void Bar(Vector2 pos, float width, float height, float value, float lag, Color fill, float seed)
-    {
-        var rng = new Random((int)seed + (int)pos.Y);
-        Raylib.DrawRectangleV(pos - new Vector2(3, 3), new Vector2(width + 6, height + 6), Palette.Ink);
-        Raylib.DrawRectangleV(pos, new Vector2(width, height), new Color(52, 44, 38, 255));
-        Raylib.DrawRectangleV(pos, new Vector2(width * Math.Clamp(lag, 0, 1), height), Palette.Parchment);
-        float v = width * Math.Clamp(value, 0, 1);
-        Raylib.DrawRectangleV(pos, new Vector2(v, height), fill);
-        // Borde del pigmento irregular.
-        for (float x = 0; x < v; x += 6)
-            Raylib.DrawRectangleV(pos + new Vector2(x, height - 2 - (float)rng.NextDouble() * 3), new Vector2(6, 2), Palette.Mix(fill, Palette.Ink, 0.35f));
-    }
-
-    public void Dispose()
-    {
-        if (!_ownsFonts) return;
-        Raylib.UnloadFont(_serif);
-        Raylib.UnloadFont(_serifBold);
     }
 }

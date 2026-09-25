@@ -166,6 +166,8 @@ sealed unsafe class Ink : IDisposable
         uniform float exposure;
         uniform float flash;
         uniform float rough;
+        uniform float desat;      // el mundo pierde color (pausa, muerte, menú)
+        uniform float vignette;   // la tinta se acerca desde los bordes
         out vec4 finalColor;
 
         float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -222,6 +224,11 @@ sealed unsafe class Ink : IDisposable
 
             vec2 q = fragTexCoord - 0.5;
             c *= 1.0 - dot(q, q) * 1.25;
+
+            // Pigmento que se va: primero la saturación, después la luz de los bordes.
+            float grey = dot(c, vec3(0.299, 0.587, 0.114));
+            c = mix(c, vec3(grey * 1.02, grey * 0.97, grey * 0.88), desat);
+            c *= 1.0 - vignette * smoothstep(0.18, 0.75, length(q * vec2(1.0, 0.8)) * 1.35);
             c *= exposure;
 
             // Fotograma de impacto: negativo de tinta en alto contraste.
@@ -238,7 +245,7 @@ sealed unsafe class Ink : IDisposable
     readonly Shader _fill, _outline, _post;
     readonly int _fillView, _fillEmissive, _fillSeed, _fillLights, _fillFog;
     readonly int _outView, _outWidth, _outSeed;
-    readonly int _postRes, _postSeed, _postWeave, _postExposure, _postFlash, _postRough;
+    readonly int _postRes, _postSeed, _postWeave, _postExposure, _postFlash, _postRough, _postDesat, _postVignette;
     readonly Mesh[] _meshes = new Mesh[4];
     Material _fillMat, _outlineMat;
     RenderTexture2D _target;
@@ -247,6 +254,8 @@ sealed unsafe class Ink : IDisposable
     public float Seed { get; private set; }
     public float Flash;
     public float Rough;
+    /// <summary>Gradación de la interfaz sobre el mundo: nunca afecta a lo que se dibuja después de la película.</summary>
+    public float Desaturate, Vignette;
     readonly Random _rng = new(3);
     Vector2 _weave;
     float _exposure = 1f;
@@ -276,6 +285,8 @@ sealed unsafe class Ink : IDisposable
         _postExposure = Raylib.GetShaderLocation(_post, "exposure");
         _postFlash = Raylib.GetShaderLocation(_post, "flash");
         _postRough = Raylib.GetShaderLocation(_post, "rough");
+        _postDesat = Raylib.GetShaderLocation(_post, "desat");
+        _postVignette = Raylib.GetShaderLocation(_post, "vignette");
 
         Raylib.SetShaderValue(_fill, _fillFog, ToVec3(Palette.Fog), ShaderUniformDataType.Vec3);
 
@@ -370,6 +381,8 @@ sealed unsafe class Ink : IDisposable
         Raylib.SetShaderValue(_post, _postExposure, _exposure, ShaderUniformDataType.Float);
         Raylib.SetShaderValue(_post, _postFlash, Math.Clamp(Flash, 0, 1), ShaderUniformDataType.Float);
         Raylib.SetShaderValue(_post, _postRough, Math.Clamp(Rough, 0, 1), ShaderUniformDataType.Float);
+        Raylib.SetShaderValue(_post, _postDesat, Math.Clamp(Desaturate, 0, 1), ShaderUniformDataType.Float);
+        Raylib.SetShaderValue(_post, _postVignette, Math.Clamp(Vignette, 0, 1), ShaderUniformDataType.Float);
         Raylib.BeginShaderMode(_post);
         // Las render textures salen invertidas en Y.
         Raylib.DrawTextureRec(_target.Texture, new Rectangle(0, 0, w, -h), Vector2.Zero, Color.White);

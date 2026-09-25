@@ -37,8 +37,15 @@ sealed unsafe class Soundtrack : IDisposable
     readonly AudioStream _stream;
     readonly short[] _pcm = new short[Chunk];
     readonly Random _rng = new(5);
+    readonly Dictionary<UiSfx, Sound> _ui = [];
     Phase _lastPhase = Phase.Explore;
     bool _stung, _phase2, _kingDown;
+    float _duck = 1;
+
+    /// <summary>Volúmenes del menú de opciones (0-1).</summary>
+    public float MusicVolume = 1, EffectsVolume = 1;
+    /// <summary>En pausa no suenan efectos nuevos y la música baja, sin detenerse.</summary>
+    public bool Paused;
 
     public Soundtrack()
     {
@@ -62,6 +69,7 @@ sealed unsafe class Soundtrack : IDisposable
             }).ToArray();
             _turn[group.Key] = 0;
         }
+        foreach (UiSfx u in Enum.GetValues<UiSfx>()) _ui[u] = Load(Synth.Ui(u));
         _stinger = Load(Synth.Stinger());
         _fanfare = Load(Synth.Fanfare());
         _loops = [_waltz, _gallop, _gallop2, _projector, _fire];
@@ -88,7 +96,8 @@ sealed unsafe class Soundtrack : IDisposable
         Vector3 ear = k.Player.Body.Position;
         Vector3 look = cam.Target - cam.Position;
         Vector3 right = Vector3.Normalize(Vector3.Cross(look, Vector3.UnitY));
-        foreach (Heard h in k.Sounds) Play(h, ear, cam.Position, right);
+        if (!Paused)
+            foreach (Heard h in k.Sounds) Play(h, ear, cam.Position, right);
         Score(k);
         Pump();
     }
@@ -124,9 +133,22 @@ sealed unsafe class Soundtrack : IDisposable
         bool musical = h.Sfx is Sfx.Death or Sfx.KingFall;
         float pitch = 1 / MathF.Sqrt(h.Size) * (musical ? 1 : 0.94f + 0.12f * (float)_rng.NextDouble());
 
-        Raylib.SetSoundVolume(s, Math.Clamp(volume, 0, 1));
+        Raylib.SetSoundVolume(s, Math.Clamp(volume * EffectsVolume, 0, 1));
         Raylib.SetSoundPitch(s, pitch);
         Raylib.SetSoundPan(s, 0.5f - 0.35f * side); // en raylib 1 es la izquierda
+        Raylib.PlaySound(s);
+    }
+
+    public void PlayUi(UiSfx u)
+    {
+        Sound s = _ui[u];
+        Raylib.SetSoundVolume(s, EffectsVolume);
+        Raylib.PlaySound(s);
+    }
+
+    void Cue(Sound s)
+    {
+        Raylib.SetSoundVolume(s, MusicVolume);
         Raylib.PlaySound(s);
     }
 
@@ -159,7 +181,7 @@ sealed unsafe class Soundtrack : IDisposable
                     foreach (Loop l in new[] { _waltz, _gallop, _gallop2 }) Cut(l);
                     break;
                 case Phase.Victory:
-                    Raylib.PlaySound(_fanfare);
+                    Cue(_fanfare);
                     break;
                 case Phase.Explore when _lastPhase == Phase.Dead:
                     _waltz.Pos = 0;
@@ -171,7 +193,7 @@ sealed unsafe class Soundtrack : IDisposable
 
         if (k.Phase == Phase.Intro && !_stung && k.PhaseTime >= Cards.CardDelay)
         {
-            Raylib.PlaySound(_stinger);
+            Cue(_stinger);
             _stung = true;
         }
 
@@ -228,7 +250,16 @@ sealed unsafe class Soundtrack : IDisposable
             }
             l.Gain = end;
         }
-        for (int i = 0; i < Chunk; i++) _pcm[i] = (short)(Math.Clamp(MathF.Tanh(acc[i]), -1, 1) * 32767);
+        // La pausa baja la música en un par de décimas, sin cortes.
+        float duckTo = (Paused ? 0.35f : 1f) * MusicVolume;
+        float duckStep = 5f * Chunk / Synth.Rate;
+        float duckEnd = _duck < duckTo ? MathF.Min(duckTo, _duck + duckStep) : MathF.Max(duckTo, _duck - duckStep);
+        for (int i = 0; i < Chunk; i++)
+        {
+            float g = _duck + (duckEnd - _duck) * i / Chunk;
+            _pcm[i] = (short)(Math.Clamp(MathF.Tanh(acc[i]) * g, -1, 1) * 32767);
+        }
+        _duck = duckEnd;
     }
 
     public void Dispose()
@@ -240,6 +271,7 @@ sealed unsafe class Soundtrack : IDisposable
                 for (int i = 1; i < copies.Length; i++) Raylib.UnloadSoundAlias(copies[i]);
                 Raylib.UnloadSound(copies[0]);
             }
+        foreach (Sound u in _ui.Values) Raylib.UnloadSound(u);
         Raylib.UnloadSound(_stinger);
         Raylib.UnloadSound(_fanfare);
     }

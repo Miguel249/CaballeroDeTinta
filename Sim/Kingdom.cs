@@ -49,6 +49,13 @@ sealed class Kingdom : IDisposable
 
     public Kingdom() => Build();
 
+    /// <summary>Partida nueva: el reino entero desde cero, hoguera apagada y jefe vivo.</summary>
+    public void NewGame()
+    {
+        BonfireLit = BossDefeated = false;
+        Build();
+    }
+
     // ================================================================= construcción
 
     public void Build()
@@ -79,7 +86,6 @@ sealed class Kingdom : IDisposable
 
         Player = new Knight(World, Bonfire + new Vector3(0, 0, -2.2f));
         King = new FallenKing(World, new Vector3(0, 0, -76));
-        Say("Descansa en la hoguera con E", 4f);
     }
 
     Body Solid(Vector3 pos, Vector3 size, Color color, Quaternion? rot = null, Shape3 shape = Shape3.Cube)
