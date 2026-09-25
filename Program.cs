@@ -8,7 +8,7 @@ using Raylib_cs;
 // Uso:
 //   dotnet run                          -> jugar
 //   dotnet run -- --test                -> pruebas de la simulación, sin ventana
-//   dotnet run -- --shot out.png <0-21> [AnchoxAlto] -> escena automática y captura (8-10: smears y múltiplos, 11-19: interfaz, 20-21: esqueleto, 22-23: desvío y curación, 24-29: el rey)
+//   dotnet run -- --shot out.png <0-21> [AnchoxAlto] -> escena automática y captura (8-10: smears y múltiplos, 11-19: interfaz, 20-21: esqueleto, 22-23: desvío y curación, 24-29: el rey, 30-32: rótulo y barra del jefe, 33: victoria)
 //   dotnet run -- --trace <0-10>        -> la misma escena sin ventana, imprimiendo el estado
 //   dotnet run -- --wav <carpeta>       -> exporta todos los sonidos y la música sintetizados
 if (args.Contains("--test"))
@@ -115,6 +115,9 @@ using (var view = new KingdomView(ui, settings))
         bool busy = onClosed != null;
         kingdom.ShatterIntoBones = !view.SkeletonModels;
         UiInput uiInput = shot != null || busy ? default : UiInput.Read();
+        // Las pistas de los menús enseñan los botones del último dispositivo tocado.
+        if (uiInput.PadUsed) ui.GlyphMode = InputGlyphMode.Gamepad;
+        else if (uiInput.DeskUsed || (!inMenu && !paused)) ui.GlyphMode = InputGlyphMode.KeyboardMouse;
 
         if (inMenu)
         {
@@ -259,6 +262,11 @@ namespace CaballeroDeTinta
         {
             // Justo en mitad del tajo del esqueleto: descenso y smear a la vez.
             20 => _frame > 5 && k.Skeletons[0] is { State: FoeState.Windup, StateTime: >= 0.66f } || _frame > 400,
+            // Rótulo breve del jefe, la barra subiendo y la barra en segunda fase.
+            30 => k.Phase == Phase.Boss && k.PhaseTime >= 0.6f || _frame > 900,
+            31 => k.Phase == Phase.Boss && k.PhaseTime >= 1.6f || _frame > 900,
+            32 => k.Phase == Phase.Boss && k.PhaseTime >= 2.8f || _frame > 900,
+            33 => k.Phase == Phase.Victory && k.PhaseTime >= 2.2f || _frame > 1400,
             _ => _frame >= Length,
         };
 
@@ -286,6 +294,15 @@ namespace CaballeroDeTinta
                 case 2: // cartel de presentación del jefe
                     if (f == 0) Teleport(new Vector3(0, 0, -38.8f));
                     return new Controls { Move = new Vector2(0, 1) };
+
+                case 30: // rótulo del jefe al empezar el combate
+                case 31: // la barra entra desde abajo
+                case 32: // y la segunda fase
+                case 33: // cartel de victoria
+                    if (f == 0) Teleport(new Vector3(0, 0, -39.2f));
+                    if (scene == 32 && k.Phase == Phase.Boss && k.PhaseTime > 2.2f) k.King.Phase2 = true;
+                    if (scene == 33 && k.Phase == Phase.Boss && k.PhaseTime > 0.5f && !k.King.Dead) k.King.TakeHit(k, 99999, heavy: true);
+                    return new Controls { Move = f < 45 ? new Vector2(0, 1) : default };
 
                 case 3: // combate: Baldomero levanta la espada
                 case 7: // y después del golpe

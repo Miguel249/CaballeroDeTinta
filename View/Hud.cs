@@ -12,11 +12,20 @@ readonly record struct BossBill(string Overline, string Name, string Epithet)
 }
 
 /// <summary>
+/// Algo que el caballero puede hacer donde está: dónde anclar la indicación, la tecla y el verbo.
+/// Hoy la simulación solo tiene "Descansar"; Hablar, Abrir o Recoger usarán este mismo dibujo.
+/// </summary>
+readonly record struct Cue(Vector3 Anchor, string Key, string Verb);
+
+/// <summary>
 /// La interfaz durante el juego. Lee el reino y lo presenta: nunca cambia la simulación.
 /// Guarda solo estado de presentación (rastros de daño, fundidos, qué zona ya se anunció...).
 /// </summary>
 sealed class Hud(Ui ui, Settings settings)
 {
+    /// <summary>Rótulo breve del jefe antes de que entre su barra, y cuándo empieza a subir la barra.</summary>
+    const float BillLength = 1.75f, BarDelay = 1.3f;
+
     readonly Tutorial _tutorial = new(ui, settings);
 
     // Vida y aguante.
@@ -32,9 +41,12 @@ sealed class Hud(Ui ui, Settings settings)
 
     // Jefe.
     float _bossFill = 1, _bossLag = 1, _bossHold, _bossReveal, _bossAlpha;
+    // El rótulo se ve la primera vez en cada partida; al volver tras morir, la barra entra directamente.
+    bool _bossBilled, _billing;
 
     // Indicaciones, avisos, zonas, objetos.
     float _prompt, _toastAge, _lastToastTime;
+    Cue _cue;
     string _toast = "";
     string? _areaTitle, _areaSubtitle;
     float _areaT = 99;
@@ -65,6 +77,7 @@ sealed class Hud(Ui ui, Settings settings)
         _lostT = 9;
         _clock = 0;
         _bossReveal = _bossAlpha = 0;
+        _bossBilled = _billing = false;
         _tutorial.Reset();
     }
 
@@ -129,7 +142,12 @@ sealed class Hud(Ui ui, Settings settings)
         float boss = king.Health / king.MaxHealth;
         if (k.Phase == Phase.Boss)
         {
-            if (_bossReveal == 0) { _bossFill = _bossLag = boss; }
+            if (_bossReveal == 0)
+            {
+                _bossFill = _bossLag = boss;
+                _billing = !_bossBilled;
+                _bossBilled = true;
+            }
             _bossReveal += dt;
         }
         else if (k.Phase != Phase.Victory) _bossReveal = 0;
@@ -143,9 +161,10 @@ sealed class Hud(Ui ui, Settings settings)
         else _bossLag = boss;
         _bossAlpha = Ui.Approach(_bossAlpha, k.Phase == Phase.Boss && !king.Dead ? 1 : 0, dt / (king.Dead ? 0.8f : 0.3f));
 
-        // Indicación de la hoguera.
-        bool canRest = k.Phase is Phase.Explore && !p.Dead && p.State != KnightState.Rest && Vector3.Distance(p.Feet, k.Bonfire) < 2.4f;
-        _prompt = Ui.Approach(_prompt, canRest ? 1 : 0, dt / (canRest ? 0.16f : 0.1f));
+        // Indicación contextual: al desvanecerse conserva el último verbo.
+        Cue? cue = CueOf(k);
+        if (cue is { } c) _cue = c;
+        _prompt = Ui.Approach(_prompt, cue != null ? 1 : 0, dt / (cue != null ? 0.16f : 0.1f));
 
         // Avisos de la simulación: se reinicia el fundido si el texto cambia o se vuelve a decir.
         if (k.ToastTime > 0 && (k.Toast != _toast || k.ToastTime > _lastToastTime + 0.01f)) { _toast = k.Toast; _toastAge = 0; }
@@ -187,6 +206,15 @@ sealed class Hud(Ui ui, Settings settings)
         _tutorial.Update(k, dt);
     }
 
+    /// <summary>Lo que se puede hacer ahora mismo. Nuevas interacciones de la simulación se añaden aquí.</summary>
+    static Cue? CueOf(Kingdom k)
+    {
+        Knight p = k.Player;
+        if (k.Phase is Phase.Explore && !p.Dead && p.State != KnightState.Rest && Vector3.Distance(p.Feet, k.Bonfire) < 2.4f)
+            return new Cue(k.Bonfire + new Vector3(0, 1.9f, 0), "E", "Descansar");
+        return null;
+    }
+
     void Announce(string id, string title, string subtitle)
     {
         if (!_areas.Add(id)) return;
@@ -219,8 +247,11 @@ sealed class Hud(Ui ui, Settings settings)
     {
         float s = ui.S;
         float a = 1 - broken;
-        float spin = ui.Time * 0.6f;
-        float wobble = (Ui.Hash(ui.Frame * 17) - 0.5f) * 0.8f * s;
+        // Giro lento y a saltos de fotograma: tinta que respira, no una mira que gira.
+        float spin = ui.Frame / 12f * 0.16f;
+        float wobble = ui.Jit(17) * 0.6f * s;
+        // El trazo engorda un poco con objetivos grandes, sin volverse tosco en los pequeños.
+        float k = Math.Clamp(r / (60 * s), 0.8f, 1.25f);
         const float gap = 0.9f;               // radianes sin tinta: el trazo no se cierra
         float sweep = (MathF.Tau - gap) * drawn;
         int pieces = broken > 0 ? 3 : 1;
@@ -229,10 +260,18 @@ sealed class Hud(Ui ui, Settings settings)
             float from = spin + piece * sweep / pieces, to = spin + (piece + 1) * sweep / pieces - (broken > 0 ? 0.25f : 0);
             float mid = (from + to) / 2;
             Vector2 push = new Vector2(MathF.Cos(mid), MathF.Sin(mid)) * broken * 14 * s;
-            Arc(c + push, r + wobble, from, to, 4.2f * s, Ui.A(Palette.Parchment, 0.85f * a));
-            Arc(c + push, r + wobble, from, to, 2.2f * s, Ui.A(Palette.Ink, a));
+            Arc(c + push, r + wobble, from, to, 4.4f * s * k, Ui.A(Palette.Parchment, 0.85f * a));
+            Arc(c + push, r + wobble, from, to, 2.3f * s * k, Ui.A(Palette.Ink, a));
         }
         if (broken > 0) return;
+        // La pluma se levanta dejando una gota al final del trazo.
+        if (drawn > 0.98f)
+        {
+            float end = spin + sweep;
+            Vector2 tip = c + new Vector2(MathF.Cos(end), MathF.Sin(end)) * (r + wobble);
+            Raylib.DrawCircleV(tip, 2.6f * s * k, Ui.A(Palette.Parchment, 0.85f));
+            Raylib.DrawCircleV(tip, 1.7f * s * k, Palette.Ink);
+        }
         float d = 5 * s * drawn;
         Raylib.DrawPoly(c, 4, d + 2 * s, 45, Ui.A(Palette.Parchment, 0.9f));
         Raylib.DrawPoly(c, 4, d, 45, Palette.Ink);
@@ -271,30 +310,34 @@ sealed class Hud(Ui ui, Settings settings)
         {
             DrawVitals(k.Player, a);
             DrawBoss(k.King, a);
-            DrawPrompt(k, cam, a);
+            DrawPrompt(cam, a);
             DrawArea(a);
             DrawToast(a);
             DrawItem(a);
-            _tutorial.Draw(a);
+            // Con la barra del jefe abajo, el consejo sube para no taparla.
+            float bar = _bossAlpha * Ui.Smooth((_bossReveal - (_billing ? BarDelay : 0)) / 0.45f);
+            _tutorial.Draw(a, 78 * ui.S * bar);
         }
     }
 
     void DrawVitals(Knight p, float a)
     {
         float s = ui.S, m = ui.Margin;
-        var crest = new Vector2(m + 16 * s, m + 16 * s);
-        float x = crest.X + 26 * s;
+        var crest = new Vector2(m + 18 * s, m + 18 * s);
+        float x = crest.X + 30 * s;
         float lowHp = p.Dead ? 0 : Math.Clamp((0.3f - _hp) / 0.3f, 0, 1);
         float hurt = MathF.Max(0, 1 - _hurtT / 0.22f);
+        float beat = lowHp * (0.5f + 0.5f * MathF.Sin(_clock * MathF.Tau / 2.4f));
 
-        ui.Crest(crest, 17 * s, Ui.Blood, a, glow: MathF.Max(0, 1 - _healT / 0.7f));
-        var hpRect = new Rectangle(x, m + 8 * s, 290 * s * p.MaxHealth / 100f, 15 * s);
+        var hpRect = new Rectangle(x, m + 9 * s, 290 * s * p.MaxHealth / 100f, 15 * s);
         ui.Vital(hpRect, new VitalLook(_hpFill, _hpLag, _hp - _hpFill, Ui.Blood, 11)
         {
             Tremble = MathF.Max(hurt, lowHp * 0.35f),
-            Pulse = lowHp * (0.5f + 0.5f * MathF.Sin(_clock * MathF.Tau / 2.4f)),
+            Pulse = beat,
             Alpha = a,
         });
+        // El emblema va encima del corchete de la barra: la vida nace del sello.
+        ui.Crest(crest, 19 * s, Ui.Blood, a, glow: MathF.Max(0, 1 - _healT / 0.7f), pulse: beat);
         // Salpicadura mínima en la punta al recibir daño.
         if (hurt > 0)
         {
@@ -308,38 +351,44 @@ sealed class Hud(Ui ui, Settings settings)
         }
 
         float exhaust = MathF.Max(0, 1 - _exhaustT / 0.4f);
-        // Remate de la barra: rombo de tinta, como en la barra del jefe.
-        var finial = new Vector2(hpRect.X + hpRect.Width + 9 * s, hpRect.Y + hpRect.Height / 2);
-        Raylib.DrawPoly(finial, 4, 6 * s, 45, Ui.A(Palette.Ink, a));
-        Raylib.DrawPoly(finial, 4, 3.8f * s, 45, Ui.A(Palette.Parchment, 0.9f * a));
-
-        var stRect = new Rectangle(x, m + 31 * s, 220 * s * p.MaxStamina / 100f, 7 * s);
+        var stRect = new Rectangle(x + 2 * s, m + 33 * s, 220 * s * p.MaxStamina / 100f, 6 * s);
         ui.Vital(stRect, new VitalLook(_stamina, _stamina, 0, Ui.Moss, 23)
         {
             Tremble = exhaust,
             Hatch = _recovering ? 1 : 0,
             Alpha = a * _staminaAlpha,
+            Style = VitalStyle.Stamina,
         });
 
         // Frascos de brasa bajo las barras.
-        float fy = m + 58 * s;
+        const float flaskSize = 27, flaskStep = 21;
+        float fy = m + 62 * s;
         for (int i = 0; i < p.MaxFlasks; i++)
         {
-            float fx = x + 8 * s + i * 24 * s;
+            float fx = x + 10 * s + i * flaskStep * s;
             float fill = i < p.Flasks ? Ui.Smooth(_filled[i] / 0.35f) : 1 - Ui.Smooth(_drained[i] / 0.4f);
             float pop = i < p.Flasks ? MathF.Max(0, 1 - _filled[i] / 0.3f) : 0;
-            ui.Flask(new Vector2(fx, fy - pop * 3 * s), 22 * s * (1 + pop * 0.12f), fill, a);
-            // Al beber, una voluta de brasa sube del frasco.
-            float puff = _drained[i] / 0.5f;
-            if (i >= p.Flasks && puff < 1)
-                for (int j = 0; j < 3; j++)
-                    Raylib.DrawCircleV(new Vector2(fx + (j - 1) * 4 * s, fy - 12 * s - puff * 16 * s - j * 3 * s), (2.2f - j * 0.5f) * s * (1 - puff), Ui.A(Palette.Ember, a * (1 - puff)));
+            float size = flaskSize * s * (1 + pop * 0.12f);
+            var at = new Vector2(fx, fy - pop * 3 * s);
+            ui.Flask(at, size, fill, a);
+            // Al beber, una llamita escapa por el cuello y se deshace en una voluta de brasa.
+            // Avanza a saltos de 12 fps, como el resto de lo dibujado.
+            float puff = MathF.Floor(_drained[i] * 12) / 12 / 0.5f;
+            if (i < p.Flasks || puff >= 1) continue;
+            Vector2 mouth = Ui.FlaskMouth(at, size);
+            if (puff < 0.35f) ui.Flame(mouth, 9 * s * (1 - puff / 0.35f), a);
+            for (int j = 0; j < 4; j++)
+            {
+                float k = puff + j * 0.08f;
+                var wisp = mouth + new Vector2(MathF.Sin(k * 7 + j) * 3.5f * s, -4 * s - k * 22 * s - j * 2.5f * s);
+                Raylib.DrawCircleV(wisp, (2.2f - j * 0.4f) * s * (1 - puff), Ui.A(Palette.Mix(Palette.Ember, Ui.Brass, j * 0.2f), a * (1 - puff)));
+            }
         }
 
         // Estado: contraataque listo tras un desvío.
         if (_riposte > 0.01f)
         {
-            float rx = x + 8 * s + p.MaxFlasks * 24 * s + 14 * s;
+            float rx = x + 10 * s + p.MaxFlasks * flaskStep * s + 12 * s;
             var at = new Vector2(rx, fy);
             float ra = a * _riposte;
             Raylib.DrawLineEx(at + new Vector2(-6, 7) * s, at + new Vector2(7, -8) * s, 3.4f * s, Ui.A(Palette.Ink, ra));
@@ -351,47 +400,74 @@ sealed class Hud(Ui ui, Settings settings)
 
     void DrawBoss(FallenKing king, float a)
     {
-        float reveal = Ui.Smooth(_bossReveal / 0.6f);
-        float ba = a * _bossAlpha;
+        if (_billing) DrawBill(a);
+        // Sin rótulo (se vuelve a la pelea tras morir) la barra entra en cuanto empieza el combate.
+        float t = _bossReveal - (_billing ? BarDelay : 0);
+        float ba = a * _bossAlpha * Ui.Smooth(t / 0.3f);
         if (ba <= 0.01f) return;
         float s = ui.S;
-        float full = MathF.Min(760 * s, ui.W * 0.62f), bw = full * reveal;
-        float y = ui.H - ui.Margin - 20 * s;
+        float reveal = Ui.Smooth(t / 0.7f);
+        float full = MathF.Min(760 * s, ui.W * 0.62f), bw = full * (0.35f + 0.65f * reveal);
+        // Entra desde abajo, como un rótulo que sube a escena.
+        float y = ui.H - ui.Margin - 20 * s + (1 - Ui.Smooth(t / 0.45f)) * 44 * s;
         var r = new Rectangle(ui.W / 2 - bw / 2, y, bw, 11 * s);
         BossBill bill = BossBill.Baldomero;
 
         // El nombre en versalitas; en la segunda fase tiembla, como si el rótulo se redibujara.
-        Vector2 nameAt = new(ui.W / 2, y - 20 * s);
-        if (king.Phase2) nameAt += new Vector2(Ui.Hash(ui.Frame) - 0.5f, Ui.Hash(ui.Frame + 7) - 0.5f) * 1.6f * s;
-        float na = ba * Ui.Smooth((_bossReveal - 0.25f) / 0.4f);
-        ui.Text(bill.Name.ToUpperInvariant(), nameAt, 21 * s, Ui.A(Palette.Parchment, na), Face.Display, 4, shadow: true);
+        Vector2 nameAt = new(ui.W / 2, y - 21 * s);
+        if (king.Phase2) nameAt += new Vector2(ui.Jit(3), ui.Jit(10)) * 0.9f * s;
+        float na = ba * Ui.Smooth((t - 0.2f) / 0.4f);
+        Color name = Ui.A(king.Phase2 ? Palette.Mix(Palette.Parchment, Ui.Ivory, 0.5f) : Palette.Parchment, na);
+        ui.Text(ui.Upper(bill.Name), nameAt, 21 * s, name, Face.Display, 4, shadow: true);
         ui.Text(bill.Epithet, nameAt + new Vector2(0, -19 * s), 14 * s, Ui.A(Palette.Parchment, na * 0.7f), Face.Body, 2, shadow: true);
 
-        if (bw < 4 * s) return;
-        ui.Vital(r, new VitalLook(_bossFill * reveal + (1 - reveal), _bossLag, 0, king.Phase2 ? Palette.Mix(Palette.Crimson, Ui.Blood, 0.4f) : Ui.Blood, 41) { Alpha = ba });
-        // Remates ornamentales en los extremos.
-        for (int side = -1; side <= 1; side += 2)
+        ui.Vital(r, new VitalLook(_bossFill * reveal + (1 - reveal), _bossLag, 0, king.Phase2 ? Palette.Mix(Palette.Crimson, Ui.Blood, 0.4f) : Ui.Blood, 41)
         {
-            Vector2 end = new(ui.W / 2 + side * (bw / 2 + 10 * s), y + 5.5f * s);
-            Raylib.DrawPoly(end, 4, 7 * s, 45, Ui.A(Palette.Ink, ba));
-            Raylib.DrawPoly(end, 4, 4.5f * s, 45, Ui.A(Palette.Parchment, ba));
-            Ui.Taper(end + new Vector2(side * 8 * s, 0), end + new Vector2(side * 30 * s, 0), 2 * s, Ui.A(Palette.Parchment, 0.8f * ba), 3);
-        }
+            Alpha = ba,
+            Style = VitalStyle.Boss,
+            Fury = king.Phase2 ? 1 : 0,
+        });
     }
 
-    void DrawPrompt(Kingdom k, Camera3D cam, float a)
+    /// <summary>
+    /// Presentación breve del jefe al empezar el combate por primera vez: capítulo, nombre y epíteto sobre
+    /// una pincelada que se pinta sola; después todo se desvanece y la barra sube desde abajo.
+    /// </summary>
+    void DrawBill(float a)
+    {
+        float t = _bossReveal;
+        if (t > BillLength) return;
+        float s = ui.S, leave = 1 - Ui.Smooth((t - 1.25f) / 0.45f);
+        BossBill bill = BossBill.Baldomero;
+        var c = new Vector2(ui.W / 2, ui.H * 0.27f);
+        float oa = Ui.Smooth(t / 0.25f) * leave * a;
+        float na = Ui.Smooth((t - 0.12f) / 0.3f) * leave * a;
+        float ea = Ui.Smooth((t - 0.38f) / 0.3f) * leave * a;
+        ui.Swath(c + new Vector2(-320 * s, 26 * s), c + new Vector2(330 * s, 8 * s), 170 * s, Ui.A(Palette.Ink, 0.78f * leave * a), 97, Ui.Smooth(t / 0.35f));
+        ui.Heading(bill.Overline, c - new Vector2(0, 50 * s), 14 * s, Ui.A(Palette.Parchment, 0.9f * oa), shadow: true);
+        // El nombre cae como un sello: entra un poco grande y se asienta.
+        float settle = 1 + 0.06f * (1 - Ui.Smooth((t - 0.12f) / 0.3f));
+        ui.Text(ui.Upper(bill.Name), c + new Vector2(0, 2 * s), 50 * s * settle, Ui.A(Ui.Ivory, na), Face.Display, 6, shadow: true);
+        ui.Flourish(c + new Vector2(0, 38 * s), 170 * s, Ui.A(Palette.Parchment, 0.85f * na), Ui.Smooth((t - 0.2f) / 0.55f), 41);
+        ui.Text(bill.Epithet, c + new Vector2(0, 64 * s + (1 - ea) * 5 * s), 20 * s, Ui.A(Palette.Parchment, 0.9f * ea), Face.Body, 2, shadow: true);
+    }
+
+    void DrawPrompt(Camera3D cam, float a)
     {
         if (_prompt <= 0.01f) return;
-        Vector3 anchor = k.Bonfire + new Vector3(0, 1.9f, 0);
-        Vector2 at = InFront(anchor, cam) ? Raylib.GetWorldToScreen(anchor, cam) : new Vector2(ui.W / 2, ui.H * 0.62f);
+        Vector2 at = InFront(_cue.Anchor, cam) ? Raylib.GetWorldToScreen(_cue.Anchor, cam) : new Vector2(ui.W / 2, ui.H * 0.62f);
         // La cámara pone al caballero en el centro: la indicación se aparta a un lado para no taparlo.
         float s = ui.S, side = at.X - ui.W / 2;
-        if (MathF.Abs(side) < 120 * s) at.X = ui.W / 2 + (side < 0 ? -120 : 120) * s;
-        float m = ui.Margin + 40 * s;
-        at = Vector2.Clamp(at, new Vector2(m, m), new Vector2(ui.W - m, ui.H - m - 170 * s));
-        ui.Prompt(at, "E", "Descansar", _prompt * a);
+        Vector2 size = ui.PromptSize(_cue.Key, _cue.Verb);
+        float clear = 90 * s + size.X / 2;
+        if (MathF.Abs(side) < clear) at.X = ui.W / 2 + (side < 0 ? -clear : clear);
+        // Nunca por encima del bloque de vida y frascos, ni sobre los consejos de abajo.
+        float mx = ui.Margin + size.X / 2 + 30 * s, top = ui.Margin + 120 * s, bottom = ui.H - ui.Margin - 200 * s;
+        at = Vector2.Clamp(at, new Vector2(mx, top), new Vector2(ui.W - mx, MathF.Max(top, bottom)));
+        ui.Prompt(at, _cue.Key, _cue.Verb, _prompt * a);
     }
 
+    /// <summary>Tarjeta de capítulo: casi solo tipografía, un velo de tinta muy tenue y un filete con volutas.</summary>
     void DrawArea(float a)
     {
         if (_areaTitle == null || _areaT > 5) return;
@@ -400,10 +476,17 @@ sealed class Hud(Ui ui, Settings settings)
         if (fa <= 0.01f) return;
         float s = ui.S;
         var c = new Vector2(ui.W / 2, ui.H * 0.24f);
-        ui.Wash(c + new Vector2(0, 14 * s), new Vector2(330, 90) * s, fa);
-        ui.Text(_areaTitle.ToUpperInvariant(), c - new Vector2(0, (1 - fa) * 4 * s), 40 * s, Ui.A(Palette.Parchment, fa), Face.Display, 5, shadow: true);
-        ui.Divider(c + new Vector2(0, 30 * s), 140 * s * Ui.Smooth(t / 1.4f), Ui.A(Palette.Parchment, fa * 0.9f));
-        ui.Text(_areaSubtitle ?? "", c + new Vector2(0, 56 * s), 18 * s, Ui.A(Palette.Parchment, fa * 0.85f), Face.Body, 2, shadow: true);
+        ui.Wash(c + new Vector2(0, 12 * s), new Vector2(380, 80) * s, fa * 0.75f);
+        // Las letras se juntan mientras aparecen, como un rótulo que se enfoca.
+        float tracking = 5 + 2.2f * (1 - Ui.Smooth(t / 1.2f));
+        Color paper = Ui.A(Palette.Parchment, fa);
+        Vector2 dot = c - new Vector2(0, 42 * s);
+        Raylib.DrawPoly(dot, 4, 3.4f * s, 45, Ui.A(Palette.Parchment, 0.8f * fa));
+        ui.Stroke(dot - new Vector2(9 * s, 0), dot - new Vector2(34 * s, 0), 1.3f * s, Ui.A(Palette.Parchment, 0.7f * fa), 71, 0.2f, tipIn: 0.1f, tipOut: 0.8f);
+        ui.Stroke(dot + new Vector2(9 * s, 0), dot + new Vector2(34 * s, 0), 1.3f * s, Ui.A(Palette.Parchment, 0.7f * fa), 72, 0.2f, tipIn: 0.1f, tipOut: 0.8f);
+        ui.Text(ui.Upper(_areaTitle), c - new Vector2(0, (1 - fa) * 4 * s), 40 * s, paper, Face.Display, tracking, shadow: true);
+        ui.Flourish(c + new Vector2(0, 31 * s), 150 * s, Ui.A(Palette.Parchment, fa * 0.9f), Ui.Smooth((t - 0.15f) / 1.2f), Ui.Seed(_areaTitle));
+        ui.Text(_areaSubtitle ?? "", c + new Vector2(0, 58 * s), 18 * s, Ui.A(Palette.Parchment, fa * 0.85f), Face.Body, 2.4f, shadow: true);
     }
 
     /// <summary>Avisos cortos de la simulación: una frase en versalitas y, si la hay, una segunda más discreta.</summary>
@@ -421,18 +504,63 @@ sealed class Hud(Ui ui, Settings settings)
         if (rest.Length > 0) ui.Text(rest, c + new Vector2(0, 26 * s), 17 * s, Ui.A(Palette.Parchment, 0.85f * ta), shadow: true);
     }
 
-    /// <summary>Tarjetita de objeto al rellenar los frascos: icono, nombre y cantidad.</summary>
+    /// <summary>
+    /// Etiqueta de inventario al rellenar los frascos: un trozo de papel con el borde derecho arrancado,
+    /// ojal de latón y cordel. Icono, nombre y cantidad; no bloquea nada.
+    /// </summary>
     void DrawItem(float a)
     {
         if (_itemT > 3.2f) return;
         float ia = Ui.Smooth(_itemT / 0.25f) * (1 - Ui.Smooth((_itemT - 2.6f) / 0.5f)) * a;
         if (ia <= 0.01f) return;
         float s = ui.S;
-        var r = new Rectangle(ui.W - ui.Margin - 230 * s + (1 - ia) * 18 * s, ui.H * 0.36f, 230 * s, 96 * s);
-        ui.Panel(r, ia, 5);
-        var icon = new Vector2(r.X + 50 * s, r.Y + r.Height / 2 + 2 * s);
-        ui.Flask(icon, 38 * s, 1, ia);
-        ui.Text("FRASCOS DE BRASA", new Vector2(r.X + 84 * s, r.Y + 38 * s), 15 * s, Ui.A(Palette.Parchment, ia), Face.Display, 2.5f, Align.Left);
-        ui.Text($"× {_itemCount}", new Vector2(r.X + 84 * s, r.Y + 62 * s), 20 * s, Ui.A(Ui.Brass, ia), Face.Display, 1, Align.Left);
+        var r = new Rectangle(ui.W - ui.Margin - 236 * s + (1 - ia) * 18 * s, ui.H * 0.36f, 236 * s, 84 * s);
+        float cut = 18 * s, mid = r.Y + r.Height / 2;
+
+        // Silueta: esquinas izquierdas cortadas en chaflán y borde derecho rasgado.
+        const int torn = 12;
+        Span<Vector2> tag = stackalloc Vector2[torn + 6];
+        int n = 0;
+        tag[n++] = new Vector2(r.X + cut, r.Y);
+        tag[n++] = new Vector2(r.X + r.Width * 0.55f, r.Y + (Ui.Hash(801) - 0.5f) * 1.5f * s);
+        for (int i = 0; i < torn; i++)
+        {
+            float k = i / (float)(torn - 1);
+            float bite = (i % 2 == 0 ? 0 : 5 * s) + Ui.Hash(810 + i) * 4 * s;
+            tag[n++] = new Vector2(r.X + r.Width - bite, r.Y + r.Height * k);
+        }
+        tag[n++] = new Vector2(r.X + r.Width * 0.5f, r.Y + r.Height + (Ui.Hash(802) - 0.5f) * 1.5f * s);
+        tag[n++] = new Vector2(r.X + cut, r.Y + r.Height);
+        tag[n++] = new Vector2(r.X, r.Y + r.Height - cut);
+        tag[n++] = new Vector2(r.X, r.Y + cut);
+        Span<Vector2> shade = stackalloc Vector2[n];
+        for (int i = 0; i < n; i++) shade[i] = tag[i] + new Vector2(5, 7) * s;
+
+        // Cordel que sale del ojal hacia fuera de la etiqueta.
+        var hole = new Vector2(r.X + 17 * s, mid);
+        Span<Vector2> cord = stackalloc Vector2[5];
+        Span<float> cw = stackalloc float[5];
+        for (int i = 0; i < 5; i++)
+        {
+            float k = i / 4f;
+            cord[i] = hole + new Vector2(-k * 44 * s, -MathF.Sin(k * 2.6f) * 16 * s + ui.Jit(830 + i, true) * 0.5f * s);
+            cw[i] = 2 * s * (1 - 0.6f * k);
+        }
+        Ui.Fill(shade, Ui.A(Palette.Ink, 0.45f * ia), new Vector2(r.X + r.Width / 2, mid) + new Vector2(5, 7) * s);
+        Ui.Pen(cord, cw, Ui.A(Palette.Umber, ia));
+        Ui.Fill(tag[..n], Ui.A(Palette.Parchment, 0.97f * ia), new Vector2(r.X + r.Width / 2, mid));
+        Ui.PenLoop(tag[..n], 1.6f * s, Ui.A(Palette.Ink, ia), 840);
+        Raylib.DrawCircleV(hole, 5.2f * s, Ui.A(Ui.Brass, ia));
+        Raylib.DrawCircleV(hole, 3.2f * s, Ui.A(Palette.Ink, ia));
+
+        ui.Flask(new Vector2(r.X + 56 * s, mid + 2 * s), 42 * s, 1, ia, 0.6f);
+        float tx = r.X + 88 * s;
+        ui.Text("FRASCOS DE BRASA", new Vector2(tx, mid - 14 * s), 15 * s, Ui.A(Palette.Ink, ia), Face.Display, 2.5f, Align.Left);
+        ui.Stroke(new Vector2(tx, mid + 1 * s), new Vector2(tx + 120 * s, mid + 1 * s), 1.2f * s, Ui.A(Palette.Ink, 0.5f * ia), 850, 0.4f, tipIn: 0.05f, tipOut: 0.6f);
+        if (_itemCount != _itemLabelCount) { _itemLabelCount = _itemCount; _itemLabel = $"× {_itemCount}"; }
+        ui.Text(_itemLabel, new Vector2(tx, mid + 18 * s), 21 * s, Ui.A(Ui.Blood, ia), Face.Display, 1, Align.Left);
     }
+
+    string _itemLabel = "";
+    int _itemLabelCount = -1;
 }

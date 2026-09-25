@@ -100,8 +100,11 @@ sealed class Tutorial(Ui ui, Settings settings)
         }
     }
 
-    /// <summary>Tarjeta abajo al centro: título en versalitas, los iconos y el verbo debajo.</summary>
-    public void Draw(float alpha)
+    /// <summary>
+    /// Tarjeta abajo al centro: título en versalitas, los iconos y el verbo debajo.
+    /// <paramref name="lift"/> la sube (en píxeles) cuando algo ocupa el pie de la pantalla.
+    /// </summary>
+    public void Draw(float alpha, float lift = 0)
     {
         if (_current is not { } lesson) return;
         float a = Ui.Smooth(_alpha) * alpha;
@@ -110,21 +113,29 @@ sealed class Tutorial(Ui ui, Settings settings)
         float press = _done ? Ui.Smooth(_doneT / 0.12f) * (1 - Ui.Smooth((_doneT - 0.25f) / 0.2f)) : 0;
 
         float colGap = 48 * s;
-        float[] widths = lesson.Gestures.Select(g => MathF.Max(ui.GlyphRowWidth(g.Glyphs), ui.Measure(g.Label, 18 * s).X)).ToArray();
-        float glyphH = lesson.Gestures.Max(g => g.Glyphs.Max(x => ui.GlyphSize(x).Y));
-        float total = widths.Sum() + colGap * (widths.Length - 1);
+        Gesture[] gestures = lesson.Gestures;
+        Span<float> widths = stackalloc float[gestures.Length];
+        float glyphH = 0, total = colGap * (gestures.Length - 1);
+        for (int i = 0; i < gestures.Length; i++)
+        {
+            widths[i] = MathF.Max(ui.GlyphRowWidth(gestures[i].Glyphs), ui.Measure(gestures[i].Label, 18 * s).X);
+            total += widths[i];
+            glyphH = MathF.Max(glyphH, ui.GlyphRowHeight(gestures[i].Glyphs));
+        }
 
         // Pegada al margen inferior: el caballero, en el centro de la imagen, queda libre.
-        float labelY = ui.H - ui.Margin - 10 * s + (1 - a) * 10 * s;
+        float labelY = ui.H - ui.Margin - 10 * s + (1 - a) * 10 * s - lift;
         float glyphY = labelY - 20 * s - glyphH / 2;
         float top = glyphY - glyphH / 2 - 30 * s;
-        ui.Wash(new Vector2(ui.W / 2, (top + labelY) / 2), new Vector2(total / 2 + 90 * s, (labelY - top) / 2 + 46 * s), a);
+        // Una pincelada tenue y ancha detrás, como la de las indicaciones: se lee sobre cualquier fondo.
+        float midY = (top + labelY) / 2, reach = total / 2 + 110 * s;
+        ui.Swath(new Vector2(ui.W / 2 - reach, midY + 6 * s), new Vector2(ui.W / 2 + reach, midY - 4 * s), labelY - top + 56 * s, Ui.A(Palette.Ink, 0.5f * a), Ui.Seed(lesson.Id), Ui.Smooth(_alpha * 1.3f));
         ui.Heading(lesson.Title, new Vector2(ui.W / 2, top), 17 * s, Ui.A(Palette.Parchment, a), shadow: true);
 
         float x = ui.W / 2 - total / 2;
-        for (int i = 0; i < lesson.Gestures.Length; i++)
+        for (int i = 0; i < gestures.Length; i++)
         {
-            Gesture g = lesson.Gestures[i];
+            Gesture g = gestures[i];
             float cx = x + widths[i] / 2;
             ui.GlyphRow(g.Glyphs, new Vector2(cx, glyphY), a, press);
             Color label = Palette.Mix(Palette.Parchment, Ui.Brass, _done ? Ui.Smooth(_doneT / 0.2f) : 0);
