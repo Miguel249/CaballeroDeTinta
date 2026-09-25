@@ -52,7 +52,7 @@ sealed class Frontend(Ui ui, Settings settings)
     [
         new("Música", Kind.Slider), new("Efectos", Kind.Slider), new("Sensibilidad del ratón", Kind.Slider),
         new("Mostrar consejos", Kind.Toggle), new("Restablecer consejos"),
-        new("Esqueletos con modelo 3D", Kind.Toggle),
+        new("Personajes con modelo 3D", Kind.Toggle),
     ];
     readonly Item[] _confirm = [new("Sí"), new("No")];
     readonly Item _back = new("Volver");
@@ -242,7 +242,7 @@ sealed class Frontend(Ui ui, Settings settings)
             case Page.Options:
                 Sounds.Add(UiSfx.Confirm);
                 if (i == 3) { settings.Tutorials = !settings.Tutorials; settings.Save(); }
-                if (i == 5) { settings.ModelSkeletons = !settings.ModelSkeletons; settings.Save(); }
+                if (i == 5) { settings.ModelCharacters = !settings.ModelCharacters; settings.Save(); }
                 if (i == 4) Confirm("¿Restablecer consejos?", "Los consejos de control volverán a aparecer desde el principio.", () =>
                 {
                     settings.SeenTutorials.Clear();
@@ -564,7 +564,7 @@ sealed class Frontend(Ui ui, Settings settings)
                 }
                 case Kind.Toggle:
                 {
-                    bool on = i == 3 ? settings.Tutorials : settings.ModelSkeletons;
+                    bool on = i == 3 ? settings.Tutorials : settings.ModelCharacters;
                     var box = Centered(new Vector2(it.Hit.X + it.Hit.Width - 150 * s, cy), new Vector2(22, 22) * s);
                     ui.InkFrame(box, 2 * s, Ui.A(Palette.Parchment, 0.9f * a), 77, 0.8f);
                     if (on)

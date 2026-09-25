@@ -432,11 +432,13 @@ sealed unsafe class Ink : IDisposable
     /// Dibuja un modelo (ya posado) con casco de tinta y relleno pintado, usando la textura de cada material.
     /// <paramref name="emissive"/> decide el brillo propio por material (ojos, runas...).
     /// </summary>
-    public void DrawModel(Model model, Matrix4x4 world, Color tint, float outline = 0.03f, Func<int, float>? emissive = null)
+    /// <param name="hidden">Mallas que no se dibujan (bit i = malla i): accesorios que el modelo trae de más.</param>
+    public void DrawModel(Model model, Matrix4x4 world, Color tint, float outline = 0.03f, Func<int, float>? emissive = null, ulong hidden = 0)
     {
         Matrix4x4 m = Matrix4x4.Transpose(world);
         for (int i = 0; i < model.MeshCount; i++)
         {
+            if (i < 64 && (hidden >> i & 1) != 0) continue;
             Mesh mesh = model.Meshes[i];
             int mat = model.MeshMaterial[i];
             if (outline > 0)

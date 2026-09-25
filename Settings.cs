@@ -12,8 +12,8 @@ sealed class Settings
     public float Effects { get; set; } = 0.9f;
     public float MouseSensitivity { get; set; } = 1f;
     public bool Tutorials { get; set; } = true;
-    /// <summary>Esqueletos con el modelo 3D (glTF) en vez de primitivas.</summary>
-    public bool ModelSkeletons { get; set; } = true;
+    /// <summary>Personajes con modelos 3D (glTF) en vez de primitivas.</summary>
+    public bool ModelCharacters { get; set; } = true;
     public HashSet<string> SeenTutorials { get; set; } = [];
 
     public const float MinSensitivity = 0.3f, MaxSensitivity = 2.5f;

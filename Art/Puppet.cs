@@ -54,6 +54,16 @@ sealed unsafe class Puppet : IDisposable
 
     public bool Has(string clip) => _clips.ContainsKey(clip);
 
+    /// <summary>
+    /// Desplazamiento horizontal que el clip mete en la cadera respecto a su inicio. Algunos clips
+    /// (esquivas) se mueven solos; la física ya mueve al personaje, así que la vista lo resta.
+    /// </summary>
+    public Vector3 Drift(string clip, int hips, float time)
+    {
+        Vector3 d = BoneAt(clip, hips, time).Translation - BoneAt(clip, hips, 0).Translation;
+        return d with { Y = 0 };
+    }
+
     /// <summary>Duración del clip en segundos.</summary>
     public float Length(string clip) => _clips.TryGetValue(clip, out int i) ? (_anims[i].KeyFrameCount - 1) / Fps : 0;
 

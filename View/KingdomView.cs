@@ -17,7 +17,7 @@ sealed class KingdomView : IDisposable
     public Camera3D? Override;
     public Camera3D Camera => _camera;
     /// <summary>Los esqueletos se dibujan ahora mismo con el modelo 3D.</summary>
-    public bool SkeletonModels => _settings.ModelSkeletons && _rigs.HasSkeletonModel;
+    public bool SkeletonModels => _settings.ModelCharacters && _rigs.HasSkeletonModel;
     /// <summary>Sin HUD ni carteles: el reino como fondo del menú.</summary>
     public bool Backdrop;
     /// <summary>Progreso de la pausa (0-1): el mundo se desatura y el HUD se retira.</summary>
@@ -38,7 +38,7 @@ sealed class KingdomView : IDisposable
     public void Draw(Kingdom k, float dt)
     {
         if (!Backdrop) _hud.Update(k, dt);
-        _rigs.UseModels = _settings.ModelSkeletons;
+        _rigs.UseModels = _settings.ModelCharacters;
         float time = (float)Raylib.GetTime();
         _ink.Tick(time);
         _rigs.SetTime(time);
