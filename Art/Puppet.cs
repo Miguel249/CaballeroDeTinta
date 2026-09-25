@@ -17,7 +17,7 @@ sealed unsafe class Puppet : IDisposable
     readonly ModelAnimation* _anims;
     readonly int _animCount;
     readonly Dictionary<string, int> _clips = [];
-    readonly Dictionary<(int Clip, int Bone), Transform[]> _tracks = [];
+    readonly Dictionary<int, Transform[][]> _tracks = [];   // clip → fotograma → hueso
 
     Puppet(string path)
     {
@@ -105,29 +105,42 @@ sealed unsafe class Puppet : IDisposable
     }
 
     /// <summary>
-    /// Pose de un hueso en cualquier instante de un clip, sin tocar la pose actual del modelo
-    /// (para estelas de golpes). El recorrido del hueso se calcula una vez por clip y se guarda.
+    /// Pose de un hueso (espacio del modelo) en cualquier instante de un clip, sin tocar la pose actual
+    /// del modelo. El recorrido de todos los huesos se calcula una vez por clip, de una pasada, y se guarda.
     /// </summary>
-    public Matrix4x4 BoneAt(string clip, int bone, float time)
+    public Transform BonePose(string clip, int bone, float time)
     {
-        if (!_clips.TryGetValue(clip, out int a) || bone < 0) return Matrix4x4.Identity;
-        if (!_tracks.TryGetValue((a, bone), out Transform[]? track))
+        if (!_clips.TryGetValue(clip, out int a) || bone < 0) return Model.Skeleton.BindPose[Math.Max(0, bone)];
+        if (!_tracks.TryGetValue(a, out Transform[][]? track))
         {
-            track = new Transform[_anims[a].KeyFrameCount];
+            int bones = Model.Skeleton.BoneCount;
+            // El último fotograma horneado es la pose de reposo (ver Frame): no se guarda.
+            track = new Transform[Math.Max(1, _anims[a].KeyFrameCount - 1)][];
             for (int f = 0; f < track.Length; f++)
             {
                 Raylib.UpdateModelAnimation(Model, _anims[a], f);
-                track[f] = Model.CurrentPose[bone];
+                track[f] = new Transform[bones];
+                for (int b = 0; b < bones; b++) track[f][b] = Model.CurrentPose[b];
             }
-            _tracks[(a, bone)] = track;
+            _tracks[a] = track;
         }
         float fr = Math.Clamp(time * Fps, 0, track.Length - 1);
         int i0 = (int)fr, i1 = Math.Min(i0 + 1, track.Length - 1);
         float u = fr - i0;
-        Transform t0 = track[i0], t1 = track[i1];
-        return Matrix4x4.CreateScale(Vector3.Lerp(t0.Scale, t1.Scale, u))
-             * Matrix4x4.CreateFromQuaternion(Quaternion.Slerp(t0.Rotation, t1.Rotation, u))
-             * Matrix4x4.CreateTranslation(Vector3.Lerp(t0.Translation, t1.Translation, u));
+        Transform t0 = track[i0][bone], t1 = track[i1][bone];
+        return new Transform
+        {
+            Translation = Vector3.Lerp(t0.Translation, t1.Translation, u),
+            Rotation = Quaternion.Slerp(t0.Rotation, t1.Rotation, u),
+            Scale = Vector3.Lerp(t0.Scale, t1.Scale, u),
+        };
+    }
+
+    public Matrix4x4 BoneAt(string clip, int bone, float time)
+    {
+        if (!_clips.ContainsKey(clip) || bone < 0) return Matrix4x4.Identity;
+        Transform t = BonePose(clip, bone, time);
+        return Matrix4x4.CreateScale(t.Scale) * Matrix4x4.CreateFromQuaternion(t.Rotation) * Matrix4x4.CreateTranslation(t.Translation);
     }
 
     public void Dispose()

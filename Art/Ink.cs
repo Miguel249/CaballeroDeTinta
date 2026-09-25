@@ -45,6 +45,7 @@ sealed unsafe class Ink : IDisposable
         in vec3 vertexPosition;
         in vec3 vertexNormal;
         in vec2 vertexTexCoord;
+        in vec4 vertexColor;          // blanco si la malla no trae color (raylib lo pone por defecto)
         uniform mat4 matModel;
         uniform mat4 matNormal;
         uniform mat4 matView;
@@ -52,6 +53,7 @@ sealed unsafe class Ink : IDisposable
         out vec3 fragPos;
         out vec3 fragNormal;
         out vec2 fragTexCoord;
+        out vec4 fragColor;
         """ + Boil + """
         void main()
         {
@@ -59,6 +61,7 @@ sealed unsafe class Ink : IDisposable
             fragPos = world;
             fragNormal = normalize(vec3(matNormal * vec4(vertexNormal, 0.0)));
             fragTexCoord = vertexTexCoord;
+            fragColor = vertexColor;
             gl_Position = matProjection * matView * vec4(world + boil(world), 1.0);
         }
         """;
@@ -68,6 +71,7 @@ sealed unsafe class Ink : IDisposable
         in vec3 fragPos;
         in vec3 fragNormal;
         in vec2 fragTexCoord;
+        in vec4 fragColor;
         uniform sampler2D texture0;   // blanco en las primitivas; la paleta pintada en los modelos
         uniform vec4 colDiffuse;
         uniform vec3 viewPos;
@@ -88,7 +92,7 @@ sealed unsafe class Ink : IDisposable
 
         void main()
         {
-            vec3 base = colDiffuse.rgb * texture(texture0, fragTexCoord).rgb;
+            vec3 base = colDiffuse.rgb * texture(texture0, fragTexCoord).rgb * fragColor.rgb;
             vec3 n = normalize(fragNormal);
             vec3 L = normalize(vec3(-0.35, 0.8, 0.45));
             float d = max(dot(n, L), 0.0);

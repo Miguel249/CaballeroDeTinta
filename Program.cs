@@ -8,7 +8,7 @@ using Raylib_cs;
 // Uso:
 //   dotnet run                          -> jugar
 //   dotnet run -- --test                -> pruebas de la simulación, sin ventana
-//   dotnet run -- --shot out.png <0-21> [AnchoxAlto] -> escena automática y captura (8-10: smears y múltiplos, 11-19: interfaz, 20-21: esqueleto, 22-23: desvío y curación)
+//   dotnet run -- --shot out.png <0-21> [AnchoxAlto] -> escena automática y captura (8-10: smears y múltiplos, 11-19: interfaz, 20-21: esqueleto, 22-23: desvío y curación, 24-29: el rey)
 //   dotnet run -- --trace <0-10>        -> la misma escena sin ventana, imprimiendo el estado
 //   dotnet run -- --wav <carpeta>       -> exporta todos los sonidos y la música sintetizados
 if (args.Contains("--test"))
@@ -262,7 +262,7 @@ namespace CaballeroDeTinta
             _ => _frame >= Length,
         };
 
-        int Length => scene switch { 1 => 150, 2 => 170, 3 => 394, 7 => 425, 4 => 36, 5 => 330, 6 => 48, 8 => 25, 9 => 18, 10 => 73, 13 => 60, 16 => 70, 17 => 82, 18 => 130, 19 => 330, 21 => 170, 22 => 17, 23 => 42, _ => 90 };
+        int Length => scene switch { 1 => 150, 2 => 170, 3 => 394, 7 => 425, 4 => 36, 5 => 330, 6 => 48, 8 => 25, 9 => 18, 10 => 73, 13 => 60, 16 => 70, 17 => 82, 18 => 130, 19 => 330, 21 => 170, 22 => 17, 23 => 42, 24 => 40, 25 => 45, 26 => 60, 27 => 50, 28 => 62, 29 => 200, _ => 90 };
 
         /// <summary>Escenas que empiezan en el menú principal (11, 12, 14, 15).</summary>
         public static bool StartsInMenu(int scene) => scene is 11 or 12 or 14 or 15;
@@ -340,6 +340,29 @@ namespace CaballeroDeTinta
                 case 23: // bebiendo un frasco de brasa
                     Camera = Look(new Vector3(1.1f, 1.5f, 2.6f), new Vector3(0, 0.8f, 4.8f), 45);
                     return new Controls { Parry = scene == 22 && f == 10, Heal = scene == 23 && f == 10 };
+
+                case 24: // Baldomero duerme en su trono
+                    if (f == 0) Teleport(new Vector3(0, 0, -62));
+                    Camera = Look(new Vector3(7, 4.5f, -64), new Vector3(0, 2.8f, -77), 55);
+                    return default;
+
+                case 25: // Baldomero se desploma (aturdido)
+                case 26: // a ciegas, con la corona sobre los ojos
+                case 27: // la furia de la segunda fase
+                case 28: // en pleno salto
+                case 29: // y al morir
+                    if (f == 0)
+                    {
+                        Teleport(new Vector3(0, 0, scene == 28 ? -50 : -61));
+                        k.King.Body.SetTransform(new Vector3(0, k.King.HalfHeight, -70));
+                        k.King.Yaw = 0;
+                        if (scene == 27) k.King.Phase2 = true;
+                        if (scene == 29) k.King.Force(KingState.Stalk);
+                        else k.King.Force(scene switch { 25 => KingState.Stagger, 26 => KingState.Blind, 27 => KingState.Enrage, _ => KingState.Leap });
+                    }
+                    if (scene == 29 && f == 2) k.King.TakeHit(k, 99999, heavy: true);
+                    Camera = Look(new Vector3(13, 6, -58), new Vector3(0, 3, -67), 60);
+                    return default;
 
                 case 20: // el esqueleto descarga el tajo
                 case 21: // y se desploma al morir

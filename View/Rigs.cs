@@ -28,6 +28,9 @@ sealed class Rigs(Ink ink) : IDisposable
     readonly Puppet? _knight = Puppet.TryLoad("Knight.glb");
     const ulong KnightHidden = 1UL << 0 | 1UL << 2 | 1UL << 3 | 1UL << 4 | 1UL << 6;
 
+    // Baldomero III: malla generada con Meshy y animada con su código de siempre (ver KingPuppet).
+    readonly KingPuppet? _king = KingPuppet.TryLoad("Baldomero.glb");
+
     /// <summary>Dibujar los esqueletos con el modelo 3D (si está disponible) o con primitivas.</summary>
     public bool UseModels = true;
     public bool HasSkeletonModel => _skeleton != null;
@@ -789,6 +792,7 @@ sealed class Rigs(Ink ink) : IDisposable
 
     public void Dispose()
     {
+        _king?.Dispose();
         _knight?.Dispose();
         _skeleton?.Dispose();
         if (_blade is { } b) Raylib.UnloadModel(b);
@@ -892,6 +896,73 @@ sealed class Rigs(Ink ink) : IDisposable
         Color skin = Palette.Mix(Palette.DirtyCream, Palette.Stone, 0.2f);
         Color steel = Palette.Mix(Palette.Steel, Palette.Umber, 0.2f);
 
+        bool mesh = UseModels && _king != null;
+        float headTilt = k.State switch
+        {
+            KingState.Asleep => 0.3f + MathF.Sin(t * 0.8f) * 0.05f,
+            KingState.Stagger => 0.25f,
+            KingState.Enrage => -0.3f,
+            KingState.Dead => -0.2f,
+            _ => MathF.Sin(t * 1.1f) * 0.04f,
+        };
+        float headRoll = k.State == KingState.Stagger ? MathF.Sin(t * 4) * 0.2f : k.State == KingState.Blind ? MathF.Sin(t * 2.5f) * 0.12f : 0;
+        if (mesh) (handR, handL, swordDir) = DrawKingMesh(k, _king!, handR, handL, swordDir, headTilt, headRoll, crown);
+        else DrawKingBody(robe, steel, step, handR, handL);
+
+        // La espada imposible.
+        Quaternion sq = Ink.FromTo(Vector3.UnitY, swordDir);
+        P(Shape3.Cube, handR + swordDir * 3.4f, new Vector3(0.42f, 6.2f, 0.12f), Palette.Mix(Palette.Steel, Palette.DirtyCream, 0.3f), sq, 0.045f);
+        P(Shape3.Cube, handR + swordDir * 0.25f, new Vector3(1.5f, 0.22f, 0.3f), Palette.OldGold, sq, 0.04f);
+        Color blade = Palette.Mix(Palette.Steel, Palette.Parchment, 0.5f);
+        if (k.State == KingState.Sweep) Smear(SweepBlade, p, FallenKing.SweepWindup, FallenKing.SweepWindup + FallenKing.SweepActive, 0.5f, 6.5f, blade, 30);
+        if (k.State == KingState.Slam) Smear(SlamBlade, p, FallenKing.SlamWindup, FallenKing.SlamWindup + 0.1f, 0.5f, 6.5f, blade, 31);
+
+        if (!mesh) DrawKingHead(k, crown, mouth, skin, t);
+        DrawKingExtras(k, robe, skin, t, mesh);
+    }
+
+    /// <summary>
+    /// Qué animación del modelo da la base del cuerpo en cada estado, y cuánto mandan los brazos de goma
+    /// del dibujo original (1: siempre, salvo al desplomarse aturdido). Al morir manda el dibujo original:
+    /// cae de espaldas como un árbol, con los brazos abiertos.
+    /// </summary>
+    (string? Clip, float Time, bool Loop, float ArmIK) KingBase(FallenKing k, KingPuppet king)
+    {
+        float t = Doses(k.StateTime);
+        bool moving = new Vector2(k.Body.LinearVelocity.X, k.Body.LinearVelocity.Z).LengthSquared() > 0.3f;
+        // WalkPhase avanza 1,1 por metro; un ciclo del clip de andar son unos 4,5 m de rey.
+        float walk = k.WalkPhase / 1.1f / 4.5f * king.Length("Walking");
+        switch (k.State)
+        {
+            case KingState.Stalk when moving:
+                return k.Phase2 ? ("Running", k.WalkPhase / 1.1f / 6f * king.Length("Running"), true, 1) : ("Walking", walk, true, 1);
+            case KingState.Blind: return ("Walking", Doses(walk), true, 1);
+            case KingState.Stagger:
+                // Se desploma (la caída de "Dead") y se levanta ("Arise") en los 2,1 s del aturdimiento.
+                return t < 0.9f ? ("Dead", t / 0.9f * 1.5f, false, 0) : ("Arise", (t - 0.9f) / 1.2f * king.Length("Arise"), false, 0);
+            default: return (null, 0, false, 1);
+        }
+    }
+
+    /// <summary>
+    /// Baldomero de malla: base de su animación, brazos hacia las manos del dibujo original y tinta.
+    /// Devuelve dónde quedan las manos (y la espada) cuando es la animación la que manda.
+    /// </summary>
+    (Vector3 HandR, Vector3 HandL, Vector3 SwordDir) DrawKingMesh(FallenKing k, KingPuppet king, Vector3 handR, Vector3 handL, Vector3 swordDir, float headTilt, float headRoll, float crown)
+    {
+        var (clip, time, loop, ik) = KingBase(k, king);
+        king.Pose(new KingPose(handR, handL, ik, headTilt, headRoll, crown, clip, time, loop, _time));
+        // Destello de daño: el pigmento se aclara; en la segunda fase la túnica tira a carmesí.
+        Color tint = k.Phase2 ? new Color(255, 228, 222, 255) : Color.White;
+        float flash = k.HurtFlash > 0 ? 0.35f : 0;
+        ink.DrawModel(king.Model, KingPuppet.ToKing * _root, tint, 0.045f, _ => flash);
+        if (ik >= 1) return (handR, handL, swordDir);
+        // La animación mueve las manos: la espada va donde quede la mano del modelo.
+        return (king.Hand(true), king.Hand(false), swordDir);
+    }
+
+    void DrawKingBody(Color robe, Color steel, float step, Vector3 handR, Vector3 handL)
+    {
         // Túnica enorme, cuello de armiño con motas y barriga real.
         P(Shape3.Cone, new(0, 1.9f, 0), new Vector3(5.4f, 3.9f, 4.8f), robe, outline: 0.05f);
         P(Shape3.Sphere, new(0, 3.2f, 0.1f), new Vector3(3.0f, 2.6f, 2.7f), Palette.Mix(robe, Palette.Charcoal, 0.2f), outline: 0.05f);
@@ -911,15 +982,10 @@ sealed class Rigs(Ink ink) : IDisposable
         ink.Hose(W(shR), W((shR + handR) / 2 + new Vector3(0.8f, 0.2f, 0)), W(handR), 0.35f, robe, 6);
         P(Shape3.Sphere, handL, new Vector3(0.8f), steel, outline: 0.04f);
         P(Shape3.Sphere, handR, new Vector3(0.8f), steel, outline: 0.04f);
+    }
 
-        // La espada imposible.
-        Quaternion sq = Ink.FromTo(Vector3.UnitY, swordDir);
-        P(Shape3.Cube, handR + swordDir * 3.4f, new Vector3(0.42f, 6.2f, 0.12f), Palette.Mix(Palette.Steel, Palette.DirtyCream, 0.3f), sq, 0.045f);
-        P(Shape3.Cube, handR + swordDir * 0.25f, new Vector3(1.5f, 0.22f, 0.3f), Palette.OldGold, sq, 0.04f);
-        Color blade = Palette.Mix(Palette.Steel, Palette.Parchment, 0.5f);
-        if (k.State == KingState.Sweep) Smear(SweepBlade, p, FallenKing.SweepWindup, FallenKing.SweepWindup + FallenKing.SweepActive, 0.5f, 6.5f, blade, 30);
-        if (k.State == KingState.Slam) Smear(SlamBlade, p, FallenKing.SlamWindup, FallenKing.SlamWindup + 0.1f, 0.5f, 6.5f, blade, 31);
-
+    void DrawKingHead(FallenKing k, float crown, float mouth, Color skin, float t)
+    {
         // Cabeza, barba, nariz y ojos saltones que siguen al caballero.
         P(Shape3.Cone, new(0, 4.1f, 0.55f), new Vector3(1.5f, 1.9f, 0.9f), Palette.DirtyCream, Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI), 0.04f);
         P(Shape3.Sphere, new(0, 5.0f, 0.1f), new Vector3(1.55f, 1.65f, 1.5f), skin, outline: 0.045f);
@@ -946,6 +1012,10 @@ sealed class Rigs(Ink ink) : IDisposable
             P(Shape3.Cone, new Vector3(0.1f, cy, 0.05f) + local, new Vector3(0.26f, 0.5f, 0.26f), Palette.OldGold, cq, 0.025f);
         }
 
+    }
+
+    void DrawKingExtras(FallenKing k, Color robe, Color skin, float t, bool mesh)
+    {
         // Segunda fase: gotea pintura carmesí.
         if (k.Phase2)
         {
@@ -962,6 +1032,7 @@ sealed class Rigs(Ink ink) : IDisposable
         if (k.State == KingState.Leap && k.Struck && k.RingStart < 0 && k.Body.LinearVelocity.LengthSquared() > 9)
             Multiples(k.Feet, k.Body.LinearVelocity, k.Yaw, 3, 0.045f, a =>
             {
+                if (mesh) { ink.DrawModel(_king!.Model, KingPuppet.ToKing * _root, Ghost(robe, a * 0.45f), 0, _ => 1f); return; }
                 P(Shape3.Cone, new(0, 1.9f, 0), new Vector3(5.4f, 3.9f, 4.8f), Ghost(robe, a * 0.45f), outline: 0, emissive: 1);
                 P(Shape3.Sphere, new(0, 3.4f, 0.1f), new Vector3(3.2f, 2.4f, 2.9f), Ghost(robe, a * 0.45f), outline: 0, emissive: 1);
                 P(Shape3.Sphere, new(0, 5.0f, 0.1f), new Vector3(1.55f, 1.65f, 1.5f), Ghost(skin, a * 0.45f), outline: 0, emissive: 1);
